@@ -220,7 +220,7 @@ export class TaskManager {
     if (!task) throw new Error(`Task "${name}" not found`);
 
     // Fixed name per task: one sandbox, one session file, forever
-    const runName = `task-${name}`;
+    const runName = name;
     const fullSandboxName = `pi-daytona-${runName}`;
 
     console.log(`[task-manager] Executing task "${name}"...`);
