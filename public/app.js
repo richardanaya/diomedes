@@ -220,7 +220,7 @@ async function selectThread(threadId) {
   $chatView.classList.remove("hidden");
   renderThreads();
 
-  const thread = threads.find((t) => t.id === threadId);
+  let thread = threads.find((t) => t.id === threadId);
   if (thread) {
     $threadName.textContent = stripPrefix(thread.name);
     $threadStatus.className = "status-dot " + (thread.state || "");
@@ -235,6 +235,36 @@ async function selectThread(threadId) {
   if (activeSession) {
     await api(`/api/sessions/${activeSession.sessionId}`, { method: "DELETE" }).catch(() => {});
     activeSession = null;
+  }
+
+  // ── Auto-start if sandbox is stopped ──
+  if (thread && thread.state === "stopped") {
+    addSystemMessage("Sandbox is stopped — starting it…");
+    try {
+      await api(`/api/sandboxes/${threadId}/start`, { method: "POST" });
+
+      // Poll until started (max ~60s)
+      let started = false;
+      for (let i = 0; i < 30; i++) {
+        await new Promise((r) => setTimeout(r, 2000));
+        await loadThreads();
+        thread = threads.find((t) => t.id === threadId);
+        if (thread && thread.state === "started") {
+          started = true;
+          $threadStatus.className = "status-dot started";
+          break;
+        }
+      }
+
+      if (!started) {
+        addSystemMessage("Sandbox failed to start in time", true);
+        return;
+      }
+      addSystemMessage("Sandbox started");
+    } catch (err) {
+      addSystemMessage(`Failed to start sandbox: ${err.message}`, true);
+      return;
+    }
   }
 
   // Create a pi session connected to this sandbox.

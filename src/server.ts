@@ -31,6 +31,7 @@ import { PiManager, type CreateSessionOptions, type PromptRequest, type PiEvent 
 import {
   listPiDaytonaSandboxes,
   getSandbox,
+  startSandbox,
   deleteSandbox,
   isDaytonaConfigured,
   getDaytonaStatus,
@@ -537,6 +538,15 @@ export async function createPiServer(config: ServerConfig = { port: 8888, host: 
       json(res, 200, sandbox);
     } catch (err: any) {
       json(res, 404, { error: err.message });
+    }
+  });
+
+  router.post("/api/sandboxes/:id/start", async (_req, res, params) => {
+    try {
+      await startSandbox(params!.id);
+      json(res, 200, { ok: true });
+    } catch (err: any) {
+      json(res, 500, { error: err.message });
     }
   });
 

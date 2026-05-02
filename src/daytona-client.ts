@@ -131,6 +131,32 @@ export async function getSandbox(idOrName: string): Promise<DaytonaSandbox> {
   return apiGet<DaytonaSandbox>(`/sandbox/${encodeURIComponent(idOrName)}`);
 }
 
+/** Start a stopped sandbox by ID or name. */
+export async function startSandbox(idOrName: string): Promise<void> {
+  await loadConfig();
+  const res = await fetch(apiUrl(`/sandbox/${encodeURIComponent(idOrName)}/start`), {
+    method: "POST",
+    headers: authHeaders(),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Daytona API error ${res.status}: ${text}`);
+  }
+}
+
+/** Stop a running sandbox by ID or name. */
+export async function stopSandbox(idOrName: string): Promise<void> {
+  await loadConfig();
+  const res = await fetch(apiUrl(`/sandbox/${encodeURIComponent(idOrName)}/stop`), {
+    method: "POST",
+    headers: authHeaders(),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Daytona API error ${res.status}: ${text}`);
+  }
+}
+
 /** Delete a sandbox by ID or name. */
 export async function deleteSandbox(idOrName: string): Promise<void> {
   await apiDelete(`/sandbox/${encodeURIComponent(idOrName)}`);
