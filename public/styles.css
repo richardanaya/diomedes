@@ -530,6 +530,11 @@ body {
   border-color: var(--accent);
 }
 
+#prompt-input:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 #prompt-input::placeholder {
   color: var(--text-muted);
 }

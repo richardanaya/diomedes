@@ -245,8 +245,8 @@ export class TaskManager {
     const task = await this.loadTask(name);
     if (!task) throw new Error(`Task "${name}" not found`);
 
-    await this.notify(); // notify: task is starting
     this.runningTasks.add(name);
+    await this.notify(); // notify: task is starting
 
     // Fixed name per task: one sandbox, one session file, forever
     const runName = name;
