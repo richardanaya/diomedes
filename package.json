@@ -8,7 +8,7 @@
   "main": "dist/server.js",
   "types": "dist/server.d.ts",
   "bin": {
-    "pi-mainframe": "./bin/pi-mainframe.js"
+    "pi-mainframe": "bin/pi-mainframe.js"
   },
   "files": [
     "dist",
