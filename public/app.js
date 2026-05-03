@@ -52,7 +52,6 @@ const $messages = document.getElementById("messages");
 const $promptInput = document.getElementById("prompt-input");
 const $btnSend = document.getElementById("btn-send");
 const $btnNewThread = document.getElementById("btn-new-thread");
-const $btnCompact = document.getElementById("btn-compact");
 const $btnDeleteThread = document.getElementById("btn-delete-thread");
 const $daytonaBadge = document.getElementById("daytona-badge");
 const $taskList = document.getElementById("task-list");
@@ -644,19 +643,6 @@ function appendAssistantBubble() {
   return el;
 }
 
-// ── Actions ─────────────────────────────────────────────────────────────────
-
-async function doCompact() {
-  if (!activeSession) return;
-  try {
-    addSystemMessage("Compacting context…");
-    await api(`/api/sessions/${activeSession.sessionId}/compact`, { method: "POST" });
-    addSystemMessage("Context compacted");
-  } catch (err) {
-    addSystemMessage(`Compact failed: ${err.message}`, true);
-  }
-}
-
 // ── Event bindings ──────────────────────────────────────────────────────────
 
 $btnNewThread.addEventListener("click", () => {
@@ -674,8 +660,6 @@ $btnSend.addEventListener("click", () => {
   $promptInput.value = "";
   sendPrompt(text);
 });
-
-$btnCompact.addEventListener("click", doCompact);
 
 if ($btnNewTask) {
   $btnNewTask.addEventListener("click", createTask);
