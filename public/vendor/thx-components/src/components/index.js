@@ -26,6 +26,7 @@ export { ThxCheckbox } from './thx-checkbox.js';
 export { ThxColorPicker } from './thx-color-picker.js';
 export { ThxCopyButton } from './thx-copy-button.js';
 export { ThxCrtDisplay } from './thx-crt-display.js';
+export { ThxCronInput } from './thx-cron-input.js';
 export { ThxDetails } from './thx-details.js';
 export { ThxDialog } from './thx-dialog.js';
 export { ThxDivider } from './thx-divider.js';

@@ -97,6 +97,44 @@ export class PiSidebar extends LitElement {
       font-family: var(--font-mono, monospace);
     }
 
+    .task-actions {
+      display: flex;
+      justify-content: center;
+      gap: var(--size-1, 4px);
+      padding-left: 18px;
+    }
+
+    .task-status-dot {
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      flex-shrink: 0;
+      background: var(--neutral-600, #666);
+    }
+    .task-status-dot.running {
+      background: var(--atmos-primary, #a6c8e1);
+      animation: dot-pulse 1.5s infinite;
+    }
+    .task-status-dot.enabled {
+      background: var(--atmos-secondary, #707e91);
+    }
+    .task-status-dot.disabled {
+      background: var(--neutral-400, #ccc);
+    }
+
+    @keyframes dot-pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.3; }
+    }
+
+    .task-row thx-badge {
+      --size-1: 1px;
+      --size-2: 2px;
+      font-size: 6px;
+      min-width: 6px;
+      min-height: 6px;
+    }
+
     .task-name {
       font-family: var(--font-mono, monospace);
       font-size: 11px;
@@ -223,6 +261,7 @@ export class PiSidebar extends LitElement {
   _onRunTask(name, e) { e.stopPropagation(); this._fire('run-task', { name }); }
   _onToggleTask(name, e) { e.stopPropagation(); this._fire('toggle-task', { name }); }
   _onDeleteTask(name, e) { e.stopPropagation(); this._fire('delete-task', { name }); }
+  _onEditTask(name, e) { e.stopPropagation(); this._fire('edit-task', { name }); }
   _onSelectTask(name) { this._fire('select-thread', { threadId: name }); }
 
   render() {
@@ -268,23 +307,26 @@ export class PiSidebar extends LitElement {
 
   _renderTask(task) {
     const isActive = this.selectedThreadId && this._taskSandboxId(task.name) === this.selectedThreadId;
-    const statusVariant = task.running ? 'pulse' : (task.enabled ? 'success' : 'inactive');
 
     return html`
       <div class="task-item ${classMap({ active: isActive })}"
            @click=${() => this._onSelectTask(task.name)}>
         <div class="task-row">
-          <thx-badge variant=${statusVariant} pill icon-only></thx-badge>
+          <span class="task-status-dot ${task.running ? 'running' : (task.enabled ? 'enabled' : 'disabled')}"></span>
           <span class="task-name">${task.name}</span>
           <span class="task-cron">${task.cron}</span>
         </div>
         <div class="task-row task-meta">
           <span>LAST: ${formatDate(task.lastRun) || 'NEVER'}</span>
-          <thx-button size="sm" variant="ghost" ?disabled=${task.running}
-            @click=${(e) => this._onRunTask(task.name, e)}>▶</thx-button>
-          <thx-button size="sm" variant="ghost"
+        </div>
+        <div class="task-row task-actions">
+          <thx-button size="md" variant="ghost" ?disabled=${task.running}
+            @click=${(e) => this._onRunTask(task.name, e)}>⚡</thx-button>
+          <thx-button size="md" variant="ghost"
             @click=${(e) => this._onToggleTask(task.name, e)}>${task.enabled ? '⏸' : '▶'}</thx-button>
-          <thx-button size="sm" variant="ghost"
+          <thx-button size="md" variant="ghost"
+            @click=${(e) => this._onEditTask(task.name, e)}>✎</thx-button>
+          <thx-button size="md" variant="ghost"
             @click=${(e) => this._onDeleteTask(task.name, e)}>×</thx-button>
         </div>
       </div>

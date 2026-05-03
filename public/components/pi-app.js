@@ -681,6 +681,27 @@ export class PiApp extends LitElement {
   _onToggleTask(e) { this._toggleTask(e.detail.name); }
   _onDeleteTask(e) { this._deleteTask(e.detail.name); }
 
+  _onEditTask(e) {
+    const name = e.detail.name;
+    const task = this._tasks.find((t) => t.name === name);
+    if (!task) return;
+    this._dialogType = 'editTask';
+    this._dialogData = { name: task.name, cron: task.cron, prompt: task.prompt };
+    this._dialogOpen = true;
+  }
+
+  async _submitEditTask() {
+    const { name, cron, prompt } = this._dialogData || {};
+    if (!name || !cron || !prompt) return;
+    try {
+      await API.updateTask(name, { cron, prompt });
+      await this._loadTasks();
+      this._closeDialog();
+    } catch (err) {
+      alert('Failed to update task: ' + err.message);
+    }
+  }
+
   // ═══════════════════════════════════════════════════════════════════════════
   // Dialog render helpers
   // ═══════════════════════════════════════════════════════════════════════════
@@ -716,11 +737,11 @@ export class PiApp extends LitElement {
               .value=${this._dialogData?.name || ''}
               @input=${(e) => { this._dialogData = { ...this._dialogData, name: e.target.value }; }}
             ></thx-input>
-            <thx-input
-              placeholder="CRON EXPRESSION (E.G. 0 9 * * *)"
+            <thx-cron-input
+              label="CRON EXPRESSION"
               .value=${this._dialogData?.cron || ''}
               @input=${(e) => { this._dialogData = { ...this._dialogData, cron: e.target.value }; }}
-            ></thx-input>
+            ></thx-cron-input>
             <thx-textarea
               placeholder="PROMPT TO SEND"
               rows="3"
@@ -732,6 +753,36 @@ export class PiApp extends LitElement {
           <div slot="footer">
             <thx-button variant="ghost" @click=${this._closeDialog}>CANCEL</thx-button>
             <thx-button variant="primary" @click=${this._submitCreateTask}>CREATE</thx-button>
+          </div>
+        </thx-dialog>
+      `;
+    }
+
+    if (this._dialogType === 'editTask') {
+      return html`
+        <thx-dialog .open=${true} header-label="EDIT TASK" size="md" @toggle=${this._closeDialog}>
+          <div style="display:flex;flex-direction:column;gap:var(--size-3,12px);">
+            <thx-input
+              placeholder="TASK NAME"
+              .value=${this._dialogData?.name || ''}
+              disabled
+            ></thx-input>
+            <thx-cron-input
+              label="CRON EXPRESSION"
+              .value=${this._dialogData?.cron || ''}
+              @input=${(e) => { this._dialogData = { ...this._dialogData, cron: e.target.value }; }}
+            ></thx-cron-input>
+            <thx-textarea
+              placeholder="PROMPT TO SEND"
+              rows="4"
+              resize="none"
+              .value=${this._dialogData?.prompt || ''}
+              @input=${(e) => { this._dialogData = { ...this._dialogData, prompt: e.target.value }; }}
+            ></thx-textarea>
+          </div>
+          <div slot="footer">
+            <thx-button variant="ghost" @click=${this._closeDialog}>CANCEL</thx-button>
+            <thx-button variant="primary" @click=${this._submitEditTask}>SAVE</thx-button>
           </div>
         </thx-dialog>
       `;
@@ -782,6 +833,7 @@ export class PiApp extends LitElement {
         @run-task=${this._onRunTask}
         @toggle-task=${this._onToggleTask}
         @delete-task=${this._onDeleteTask}
+        @edit-task=${this._onEditTask}
       ></pi-sidebar>
 
       <main>

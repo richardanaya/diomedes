@@ -85,6 +85,25 @@ export function deleteTask(name) {
   return api(`/api/tasks/${encodeURIComponent(name)}`, { method: 'DELETE' });
 }
 
+export function updateTask(name, updates) {
+  return api(`/api/tasks/${encodeURIComponent(name)}`, {
+    method: 'PUT',
+    body: JSON.stringify(updates),
+  });
+}
+
+export function transcribeAudio(audioBlob) {
+  return fetch('/api/transcribe', {
+    method: 'POST',
+    body: audioBlob,
+  }).then((res) => {
+    if (!res.ok) {
+      return res.json().then((err) => { throw new Error(err.error || res.statusText); });
+    }
+    return res.json();
+  });
+}
+
 // ── Utilities ───────────────────────────────────────────────────────────────
 
 export function stripPrefix(name) {

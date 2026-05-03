@@ -177,6 +177,35 @@ export class TaskManager {
     return task;
   }
 
+  /** Update an existing task's cron and/or prompt. */
+  async updateTask(name: string, updates: { cron?: string; prompt?: string }): Promise<TaskState | null> {
+    const task = await this.loadTask(name);
+    if (!task) return null;
+
+    if (updates.cron !== undefined) {
+      const cronModule = await import("node-cron");
+      if (!cronModule.default.validate(updates.cron)) {
+        throw new Error(`Invalid cron expression: "${updates.cron}"`);
+      }
+      task.cron = updates.cron;
+    }
+    if (updates.prompt !== undefined) {
+      task.prompt = updates.prompt;
+    }
+
+    const taskPath = join(this.tasksDir, `${name}.json`);
+    await writeFile(taskPath, JSON.stringify(task, null, 2), "utf-8");
+
+    // Reschedule if enabled and cron changed
+    this.unscheduleTask(name);
+    if (task.enabled) {
+      await this.scheduleTask(task);
+    }
+
+    await this.notify();
+    return this.getTask(name);
+  }
+
   /** Delete a task and unschedule it. */
   async deleteTask(name: string): Promise<void> {
     const taskPath = join(this.tasksDir, `${name}.json`);

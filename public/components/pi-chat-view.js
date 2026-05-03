@@ -1,6 +1,8 @@
 import { LitElement, html, css } from 'lit';
 import { classMap } from 'lit/directives/class-map.js';
 import { ref, createRef } from 'lit/directives/ref.js';
+import './pi-markdown.js';
+import { transcribeAudio } from './pi-api.js';
 
 
 export class PiChatView extends LitElement {
@@ -165,6 +167,40 @@ export class PiChatView extends LitElement {
     this._textareaRef = createRef();
     this._audio = null;
     this._playingContent = null;
+    this._recording = false;
+    this._mediaRecorder = null;
+    this._audioChunks = [];
+  }
+
+  connectedCallback() {
+    super.connectedCallback();
+    this._onKeyDown = this._onKeyDown.bind(this);
+    this._onKeyUp = this._onKeyUp.bind(this);
+    this._onVisibilityChange = () => { if (this._recording && document.hidden) this._stopRecording(); };
+    document.addEventListener('keydown', this._onKeyDown);
+    document.addEventListener('keyup', this._onKeyUp);
+    document.addEventListener('visibilitychange', this._onVisibilityChange);
+  }
+
+  disconnectedCallback() {
+    super.disconnectedCallback();
+    document.removeEventListener('keydown', this._onKeyDown);
+    document.removeEventListener('keyup', this._onKeyUp);
+    document.removeEventListener('visibilitychange', this._onVisibilityChange);
+    if (this._recording) this._stopRecording();
+  }
+
+  _onKeyDown(e) {
+    if (e.ctrlKey && e.key === 'd' && !e.repeat && !this._recording) {
+      e.preventDefault();
+      this._startRecording();
+    }
+  }
+
+  _onKeyUp(e) {
+    if (this._recording && (e.key === 'd' || e.key === 'Control')) {
+      this._stopRecording();
+    }
   }
 
   updated(changed) {
@@ -199,6 +235,62 @@ export class PiChatView extends LitElement {
     }));
   }
 
+  async _toggleRecording() {
+    if (this._recording) {
+      this._stopRecording();
+    } else {
+      await this._startRecording();
+    }
+  }
+
+  async _startRecording() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      this._audioChunks = [];
+      this._mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+
+      this._mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) this._audioChunks.push(e.data);
+      };
+
+      this._mediaRecorder.onstop = async () => {
+        stream.getTracks().forEach((t) => t.stop());
+        if (this._audioChunks.length === 0) return;
+
+        const audioBlob = new Blob(this._audioChunks, { type: 'audio/webm' });
+        this._audioChunks = [];
+
+        try {
+          const result = await transcribeAudio(audioBlob);
+          const text = result.text?.trim();
+          if (text) {
+            this.dispatchEvent(new CustomEvent('send-prompt', {
+              detail: { message: text },
+              bubbles: true,
+              composed: true,
+            }));
+          }
+        } catch (err) {
+          console.error('Transcription failed:', err);
+        }
+      };
+
+      this._mediaRecorder.start();
+      this._recording = true;
+      this.requestUpdate();
+    } catch (err) {
+      console.error('Microphone access denied:', err);
+    }
+  }
+
+  _stopRecording() {
+    if (this._mediaRecorder && this._mediaRecorder.state !== 'inactive') {
+      this._mediaRecorder.stop();
+    }
+    this._recording = false;
+    this.requestUpdate();
+  }
+
   render() {
     return html`
       <div class="messages" ${ref(this._messagesRef)}>
@@ -217,6 +309,15 @@ export class PiChatView extends LitElement {
           ?disabled=${this.inputDisabled || this.isStreaming}
           @keydown=${(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); this._onSend(); } }}
         ></thx-textarea>
+        <thx-button
+          class="record-btn ${classMap({ recording: this._recording })}"
+          stretch
+          variant=${this._recording ? 'error' : 'outline-primary'}
+          ?disabled=${this.inputDisabled && !this._recording}
+          @click=${this._toggleRecording}
+        >
+          ${this._recording ? html`⏹ STOP` : html`<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="1" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>`}
+        </thx-button>
         <thx-button
           stretch
           variant="primary"
@@ -267,7 +368,7 @@ export class PiChatView extends LitElement {
     return html`
       <div class="message ${msg.role}">
         <span class="message-role">${roleLabel}</span>
-        <thx-card>${msg.content}</thx-card>
+        <thx-card><pi-markdown .content=${msg.content}></pi-markdown></thx-card>
         ${msg.role === 'assistant' ? html`
           <div class="message-actions">
             <thx-icon-button

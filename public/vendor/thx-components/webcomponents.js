@@ -21,6 +21,7 @@ import './src/components/thx-checkbox.js';
 import './src/components/thx-color-picker.js';
 import './src/components/thx-copy-button.js';
 import './src/components/thx-crt-display.js';
+import './src/components/thx-cron-input.js';
 import './src/components/thx-details.js';
 import './src/components/thx-dialog.js';
 import './src/components/thx-divider.js';

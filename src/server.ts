@@ -708,6 +708,20 @@ export async function createPiServer(config: ServerConfig = { port: 8888, host: 
     }
   });
 
+  router.put("/api/tasks/:name", async (req, res, params) => {
+    try {
+      const body = await parseBody<any>(req);
+      const result = await taskManager.updateTask(params!.name, body);
+      if (!result) {
+        json(res, 404, { error: "Task not found" });
+        return;
+      }
+      json(res, 200, result);
+    } catch (err: any) {
+      json(res, 400, { error: err.message });
+    }
+  });
+
   router.delete("/api/tasks/:name", async (_req, res, params) => {
     try {
       await taskManager.deleteTask(params!.name);
@@ -781,6 +795,62 @@ export async function createPiServer(config: ServerConfig = { port: 8888, host: 
       res.end(Buffer.from(audioBuffer));
     } catch (err: any) {
       json(res, 500, { error: err.message ?? "TTS generation failed" });
+    }
+  });
+
+  // -----------------------------------------------------------------------
+  // STT — speech to text via xAI
+  // -----------------------------------------------------------------------
+
+  router.post("/api/transcribe", async (req, res) => {
+    try {
+      // Read the raw body (audio/wav blob from browser MediaRecorder)
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) {
+        chunks.push(Buffer.from(chunk));
+      }
+      const audioBuffer = Buffer.concat(chunks);
+
+      if (audioBuffer.length === 0) {
+        json(res, 400, { error: "No audio data received" });
+        return;
+      }
+
+      let config: any = {};
+      try {
+        const raw = await readFile(TTS_CONFIG_PATH, "utf-8");
+        config = JSON.parse(raw);
+      } catch {
+        json(res, 500, { error: "STT not configured — missing ~/.pi/xai-tts.json" });
+        return;
+      }
+
+      if (!config.xaiApiKey) {
+        json(res, 500, { error: "Missing xaiApiKey in ~/.pi/xai-tts.json" });
+        return;
+      }
+
+      const formData = new FormData();
+      formData.append("format", "true");
+      formData.append("language", config.language || "en");
+      formData.append("file", new Blob([audioBuffer], { type: "audio/webm" }), "recording.webm");
+
+      const response = await fetch("https://api.x.ai/v1/stt", {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${config.xaiApiKey}` },
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        json(res, 502, { error: `xAI STT error: ${response.status} ${errorText}` });
+        return;
+      }
+
+      const result = (await response.json()) as { text?: string };
+      json(res, 200, { text: result.text?.trim() || "" });
+    } catch (err: any) {
+      json(res, 500, { error: err.message ?? "Transcription failed" });
     }
   });
 
