@@ -267,6 +267,31 @@ async function deleteThread(tid) {
 
 // ── Tasks ──────────────────────────────────────────────────────────────────
 
+let taskEventSource = null;
+
+function connectTaskStream() {
+  if (taskEventSource) return;
+
+  taskEventSource = new EventSource("/api/tasks/listen");
+
+  taskEventSource.addEventListener("tasks", (e) => {
+    try {
+      const data = JSON.parse(e.data);
+      tasks = data.tasks || [];
+      renderTasks();
+    } catch (err) {
+      console.error("Task stream parse error:", err);
+    }
+  });
+
+  taskEventSource.addEventListener("error", () => {
+    // Auto-reconnect after a delay
+    taskEventSource?.close();
+    taskEventSource = null;
+    setTimeout(connectTaskStream, 3000);
+  });
+}
+
 async function loadTasks() {
   try {
     const data = await api("/api/tasks");
@@ -676,6 +701,7 @@ $promptInput.addEventListener("keydown", (e) => {
 
 (async () => {
   await loadTasks();
+  connectTaskStream();
   await loadThreads();
 
   // Auto-select thread from URL on initial load

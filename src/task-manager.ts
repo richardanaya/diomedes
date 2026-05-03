@@ -34,6 +34,8 @@ export interface TaskState {
   nextRun: string | null;
 }
 
+export type TaskListener = (tasks: TaskState[]) => void;
+
 // ── Constants ───────────────────────────────────────────────────────────────
 
 const TASKS_DIR = "tasks";
@@ -46,6 +48,7 @@ export class TaskManager {
   private tasksDir: string;
   private projectCwd: string;
   private jobs: Map<string, { task: Task; job: any /* cronjob */ }> = new Map();
+  private listeners: Set<TaskListener> = new Set();
   private pi: PiManager;
 
   constructor(pi: PiManager, cwd: string) {
@@ -84,6 +87,22 @@ export class TaskManager {
     }
     this.jobs.clear();
     console.log("[task-manager] All tasks stopped");
+  }
+
+  // ── Eventing ───────────────────────────────────────────────────────────
+
+  subscribe(listener: TaskListener): () => void {
+    this.listeners.add(listener);
+    // Send initial state immediately
+    this.listTasks().then((tasks) => listener(tasks)).catch(() => {});
+    return () => { this.listeners.delete(listener); };
+  }
+
+  private async notify(): Promise<void> {
+    const tasks = await this.listTasks();
+    for (const listener of this.listeners) {
+      try { listener(tasks); } catch { /* ignore */ }
+    }
   }
 
   // ── CRUD ───────────────────────────────────────────────────────────────
@@ -150,6 +169,7 @@ export class TaskManager {
 
     await writeFile(taskPath, JSON.stringify(task, null, 2), "utf-8");
     this.scheduleTask(task);
+    await this.notify();
     return task;
   }
 
@@ -163,6 +183,7 @@ export class TaskManager {
       entry.job.stop();
       this.jobs.delete(name);
     }
+    await this.notify();
   }
 
   /** Enable or disable a task. */
@@ -181,6 +202,7 @@ export class TaskManager {
       this.scheduleTask(task);
     }
 
+    await this.notify();
     return this.getTask(name);
   }
 
@@ -218,6 +240,8 @@ export class TaskManager {
   async executeTask(name: string): Promise<void> {
     const task = await this.loadTask(name);
     if (!task) throw new Error(`Task "${name}" not found`);
+
+    await this.notify(); // notify: task is starting
 
     // Fixed name per task: one sandbox, one session file, forever
     const runName = name;
@@ -262,6 +286,8 @@ export class TaskManager {
     } catch (err: any) {
       console.error(`[task-manager] Task "${name}" failed:`, err.message);
       throw err;
+    } finally {
+      await this.notify(); // notify: task finished (success or failure)
     }
   }
 

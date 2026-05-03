@@ -690,6 +690,40 @@ export async function createPiServer(config: ServerConfig = { port: 8888, host: 
     }
   });
 
+  // SSE stream for task updates
+  router.get("/api/tasks/listen", async (req, res) => {
+    sse(res);
+
+    const sendTasks = (tasks: any[]) => {
+      if (!res.writableEnded) {
+        sendSSE(res, "tasks", { tasks });
+      }
+    };
+
+    const unsubscribe = taskManager.subscribe(sendTasks);
+
+    req.on("close", () => {
+      unsubscribe();
+    });
+
+    req.on("error", () => {
+      unsubscribe();
+    });
+
+    // Keep connection alive with a heartbeat every 30s
+    const heartbeat = setInterval(() => {
+      if (res.writableEnded) {
+        clearInterval(heartbeat);
+        return;
+      }
+      res.write(":heartbeat\n\n");
+    }, 30000);
+
+    req.on("close", () => {
+      clearInterval(heartbeat);
+    });
+  });
+
   // -----------------------------------------------------------------------
   // Static file serving (public/)
   // -----------------------------------------------------------------------
