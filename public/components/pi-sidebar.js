@@ -191,7 +191,6 @@ export class PiSidebar extends LitElement {
 
     .sidebar-footer thx-button {
       width: 100%;
-      display: block;
     }
 
     .empty {
