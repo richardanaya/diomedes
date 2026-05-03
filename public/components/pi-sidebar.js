@@ -31,6 +31,11 @@ export class PiSidebar extends LitElement {
       justify-content: space-between;
       gap: var(--size-2, 8px);
     }
+    .logo {
+      width: 22px;
+      height: 22px;
+      flex-shrink: 0;
+    }
     .sidebar-header h1 {
       font-family: var(--font-mono, monospace);
       font-size: var(--font-size-0, 13px);
@@ -228,6 +233,7 @@ export class PiSidebar extends LitElement {
   render() {
     return html`
       <div class="sidebar-header">
+        <img class="logo" src="/future_pi.png" alt="pi" />
         <h1>pi-mainframe</h1>
         ${this.daytonaConfigured
           ? html`<thx-badge variant="pulse">DAYTONA</thx-badge>`
