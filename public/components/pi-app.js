@@ -319,20 +319,22 @@ export class PiApp extends LitElement {
     this._messages = [...this._messages, { role: 'system', content: text, isError }];
   }
 
-  /** Convert raw API messages to UI message objects, handling all roles. */
+  /** Convert raw API messages to UI message objects, handling all roles.
+   *  Tool calls and their results are paired into single accordion messages. */
   _processHistoryMessages(rawMessages) {
     const msgs = [];
+    const pendingToolCalls = []; // toolCall blocks awaiting their toolResult
+
     for (const msg of rawMessages || []) {
       if (msg.role === 'user') {
         const text = API.extractMessageText(msg);
         msgs.push({ role: 'user', content: text || JSON.stringify(msg.content) });
       } else if (msg.role === 'assistant') {
-        // Assistant content may include thinking, text, and toolCall blocks
         const content = msg.content;
         if (Array.isArray(content)) {
           for (const block of content) {
             if (block.type === 'toolCall') {
-              msgs.push({ role: 'tool', content: `🔧 ${block.name}` });
+              pendingToolCalls.push(block);
             } else if (block.type === 'text') {
               const text = (block.text || '').trim();
               if (text) msgs.push({ role: 'assistant', content: text });
@@ -344,12 +346,32 @@ export class PiApp extends LitElement {
           if (text) msgs.push({ role: 'assistant', content: text });
         }
       } else if (msg.role === 'toolResult') {
-        const toolName = msg.toolName || 'unknown';
-        const isError = msg.isError;
-        const prefix = isError ? '❌' : '✓';
-        msgs.push({ role: 'tool', content: `${prefix} ${toolName}`, isError });
+        // Pair with the matching pending tool call
+        const tcIdx = pendingToolCalls.findIndex((tc) => tc.id === msg.toolCallId);
+        const tc = tcIdx >= 0 ? pendingToolCalls[tcIdx] : null;
+        if (tcIdx >= 0) pendingToolCalls.splice(tcIdx, 1);
+
+        msgs.push({
+          role: 'tool',
+          toolName: msg.toolName || tc?.name || 'unknown',
+          status: msg.isError ? 'error' : 'success',
+          request: tc?.arguments || {},
+          response: API.extractMessageText(msg),
+        });
       }
     }
+
+    // Any unmatched tool calls (shouldn't normally happen)
+    for (const tc of pendingToolCalls) {
+      msgs.push({
+        role: 'tool',
+        toolName: tc.name || 'unknown',
+        status: 'running',
+        request: tc.arguments || {},
+        response: '',
+      });
+    }
+
     return msgs;
   }
 
@@ -384,6 +406,7 @@ export class PiApp extends LitElement {
     let turnStartIndex = this._messages.length;
     let assistantMsgIndex = -1;
     let assistantText = '';
+    let pendingToolMsgIndex = -1;  // live tool accordion to update on tool-end
 
     try {
       const res = await API.promptStream(this._activeSession.sessionId, message);
@@ -422,10 +445,17 @@ export class PiApp extends LitElement {
                 msgs[assistantMsgIndex] = { ...msgs[assistantMsgIndex], content: assistantText };
                 this._messages = msgs;
               } else if (subtype === 'toolcall_end') {
-                // Show tool call indicator in live stream
+                // Create live accordion tool message (status: running)
                 const tc = ev.toolCall;
                 if (tc?.name) {
-                  this._messages = [...this._messages, { role: 'tool', content: `🔧 ${tc.name}` }];
+                  this._messages = [...this._messages, {
+                    role: 'tool',
+                    toolName: tc.name,
+                    status: 'running',
+                    request: tc.arguments || {},
+                    response: '',
+                  }];
+                  pendingToolMsgIndex = this._messages.length - 1;
                 }
               }
               // toolcall_start / toolcall_delta: ignore, we'll get canonical
@@ -434,8 +464,14 @@ export class PiApp extends LitElement {
             } else if (eventType === 'tool-start') {
               // toolcall_end already shows the indicator; tool-start is redundant
             } else if (eventType === 'tool-end') {
-              if (data.isError) {
-                this._messages = [...this._messages, { role: 'tool', content: `❌ ${data.toolName} error`, isError: true }];
+              // Update live accordion with result status
+              if (pendingToolMsgIndex >= 0) {
+                const msgs = [...this._messages];
+                msgs[pendingToolMsgIndex] = {
+                  ...msgs[pendingToolMsgIndex],
+                  status: data.isError ? 'error' : 'success',
+                };
+                this._messages = msgs;
               }
             } else if (eventType === 'turn-end') {
               // Canonical data — replace live-streamed turn messages
@@ -456,6 +492,7 @@ export class PiApp extends LitElement {
               turnStartIndex = this._messages.length;
               assistantMsgIndex = -1;
               assistantText = '';
+              pendingToolMsgIndex = -1;
 
             } else if (eventType === 'error') {
               this._addSystemMsg(data.error, true);

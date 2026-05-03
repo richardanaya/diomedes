@@ -1,6 +1,7 @@
 import { LitElement, html, css } from 'lit';
 import { classMap } from 'lit/directives/class-map.js';
 import { ref, createRef } from 'lit/directives/ref.js';
+import './pi-tool-accordion.js';
 
 export class PiChatView extends LitElement {
   static properties = {
@@ -333,7 +334,17 @@ export class PiChatView extends LitElement {
   }
 
   _renderMessage(msg) {
-    if (msg.role === 'system' || msg.role === 'tool') {
+    if (msg.role === 'tool') {
+      return html`
+        <pi-tool-accordion
+          .toolName=${msg.toolName || 'unknown'}
+          .status=${msg.status || 'success'}
+          .request=${msg.request || {}}
+          .response=${msg.response || ''}
+        ></pi-tool-accordion>`;
+    }
+
+    if (msg.role === 'system') {
       return html`
         <div class="message-tool ${classMap({ error: !!msg.isError })}">
           ${msg.content}
