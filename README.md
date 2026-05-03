@@ -1,30 +1,38 @@
 # pi-mainframe
 
-HTTP/SSE server wrapping [pi coding agent](https://github.com/mariozechner/pi-coding-agent) as a library, with [pi-daytona](https://github.com/richardanaya/pi-daytona) sandbox integration.
+HTTP/SSE server wrapping [pi coding agent](https://github.com/mariozechner/pi-coding-agent) as a library, with a web UI, [pi-daytona](https://github.com/richardanaya/pi-daytona) sandbox integration, and xAI TTS support.
 
 <img width="1724" height="1214" alt="image" src="https://github.com/user-attachments/assets/c5615f10-82a9-439e-b442-8b27c9e507bc" />
 
-
 ## Features
 
+- **Web UI** — chat interface with thread management, task scheduling, and sandbox monitoring
 - **REST API** — create sessions, send prompts, manage models
 - **SSE streaming** — real-time event stream for agent output
 - **pi-daytona support** — run tools inside isolated Daytona cloud sandboxes
+- **xAI TTS** — text-to-speech playback of assistant responses
+- **Task scheduling** — cron-based automated prompt execution
 - **Zero Express** — uses Node.js built-in `http` module (no framework dependencies)
 
 ## Quick Start
 
 ```bash
-# Install dependencies
+# Run directly via npx
+npx pi-mainframe
+
+# Or install globally
+npm install -g pi-mainframe
+pi-mainframe
+```
+
+The server starts on `http://127.0.0.1:8888` by default. Open that URL in your browser to use the web UI.
+
+### Development
+
+```bash
+git clone https://github.com/richardanaya/pi-mainframe.git
+cd pi-mainframe
 npm install
-
-# Build
-npm run build
-
-# Start server
-npm start
-
-# Or dev mode with hot reload
 npm run dev
 ```
 
@@ -38,7 +46,19 @@ Environment variables:
 | `HOST` | `127.0.0.1` | Bind address |
 | `PI_DEFAULT_PROVIDER` | `anthropic` | Default model provider |
 | `PI_DEFAULT_MODEL` | `claude-sonnet-4-20250514` | Default model ID |
-| `DAYTONA_EXTENSION_PATH` | `~/.pi/extensions/pi-daytona/index.ts` | Path to pi-daytona extension |
+
+### TTS
+
+Create `~/.pi/xai-tts.json` with your xAI API key:
+
+```json
+{
+  "xaiApiKey": "your-key-here",
+  "voice": "eve"
+}
+```
+
+Voice options: `leo`, `eve`, `ara`, `rex`, `sal`
 
 ## API Endpoints
 
@@ -86,6 +106,12 @@ GET  /api/sessions/:id/messages   Get all messages
 
 ```
 POST /api/auth                    Set runtime API key
+```
+
+### TTS
+
+```
+POST /api/tts                     Generate speech audio (xAI TTS)
 ```
 
 ## Using Sandboxes (pi-daytona)

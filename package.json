@@ -1,15 +1,41 @@
 {
   "name": "pi-mainframe",
-  "version": "0.0.0",
-  "description": "HTTP server that wraps pi coding agent as a library",
+  "version": "1.0.0",
+  "description": "HTTP/SSE server wrapping pi coding agent with a web UI, sandbox support, and TTS",
   "author": "Richard Anaya",
   "license": "MIT",
   "type": "module",
   "main": "dist/server.js",
+  "types": "dist/server.d.ts",
+  "bin": {
+    "pi-mainframe": "./bin/pi-mainframe.js"
+  },
+  "files": [
+    "dist",
+    "public",
+    "bin"
+  ],
+  "keywords": [
+    "pi",
+    "coding-agent",
+    "ai",
+    "llm",
+    "sse",
+    "http-server",
+    "sandbox",
+    "web-ui",
+    "tts"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/richardanaya/pi-mainframe.git"
+  },
+  "homepage": "https://github.com/richardanaya/pi-mainframe#readme",
   "scripts": {
     "build": "tsc",
     "start": "node dist/server.js",
-    "dev": "tsx src/server.ts"
+    "dev": "tsx src/server.ts",
+    "prepublishOnly": "npm run build"
   },
   "dependencies": {
     "@mariozechner/pi-ai": "latest",
@@ -20,5 +46,8 @@
     "@types/node": "^22.0.0",
     "tsx": "^4.0.0",
     "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }
