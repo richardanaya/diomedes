@@ -1,5 +1,70 @@
-// pi-mainframe — subset of THX 1138 web components
+// Single entry point: all THX 1138 web components
+// import './webcomponents.js' loads the entire library
+
+import './src/components/thx-alert.js';
+import './src/components/thx-animated-image.js';
+import './src/components/thx-animation.js';
+import './src/components/thx-avatar.js';
 import './src/components/thx-badge.js';
+import './src/components/thx-breadcrumb-item.js';
+import './src/components/thx-breadcrumb.js';
+import './src/components/thx-button-group.js';
 import './src/components/thx-button.js';
-import './src/components/thx-textarea.js';
+import './src/components/thx-card.js';
+import './src/components/thx-carousel-item.js';
+import './src/components/thx-carousel.js';
+import './src/components/thx-chart-bar.js';
+import './src/components/thx-chart-gauge.js';
+import './src/components/thx-chart-line.js';
+import './src/components/thx-chart-monitors.js';
+import './src/components/thx-checkbox.js';
+import './src/components/thx-color-picker.js';
+import './src/components/thx-copy-button.js';
+import './src/components/thx-crt-display.js';
+import './src/components/thx-details.js';
+import './src/components/thx-dialog.js';
+import './src/components/thx-divider.js';
+import './src/components/thx-drawer.js';
+import './src/components/thx-dropdown.js';
+import './src/components/thx-format-bytes.js';
+import './src/components/thx-format-date.js';
+import './src/components/thx-format-number.js';
+import './src/components/thx-icon-button.js';
+import './src/components/thx-icon.js';
+import './src/components/thx-image-comparer.js';
+import './src/components/thx-include.js';
+import './src/components/thx-input.js';
+import './src/components/thx-menu-item.js';
+import './src/components/thx-menu.js';
+import './src/components/thx-menu-label.js';
+import './src/components/thx-multi-select.js';
+import './src/components/thx-mutation-observer.js';
+import './src/components/thx-option.js';
+import './src/components/thx-popup.js';
+import './src/components/thx-progress-bar.js';
+import './src/components/thx-progress-ring.js';
+import './src/components/thx-radio-button.js';
+import './src/components/thx-radio-group.js';
+import './src/components/thx-radio.js';
+import './src/components/thx-range.js';
+import './src/components/thx-rating.js';
+import './src/components/thx-relative-time.js';
+import './src/components/thx-resize-observer.js';
+import './src/components/thx-select.js';
+import './src/components/thx-skeleton.js';
 import './src/components/thx-spinner.js';
+import './src/components/thx-split-panel.js';
+import './src/components/thx-status-leds.js';
+import './src/components/thx-switch.js';
+import './src/components/thx-tab-group.js';
+import './src/components/thx-tab.js';
+import './src/components/thx-tab-panel.js';
+import './src/components/thx-tag.js';
+import './src/components/thx-textarea.js';
+import './src/components/thx-tooltip.js';
+import './src/components/thx-tree-item.js';
+import './src/components/thx-tree.js';
+import './src/components/thx-visually-hidden.js';
+
+// Also export the index barrel if consumers need class refs
+export * from './src/components/index.js';
