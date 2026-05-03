@@ -23,7 +23,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
-import { readFile, stat } from "node:fs/promises";
+import { readFile, stat, unlink } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
@@ -577,6 +577,18 @@ export async function createPiServer(config: ServerConfig = { port: 8888, host: 
 
   router.delete("/api/sandboxes/:id", async (_req, res, params) => {
     try {
+      // Try to find the sandbox name so we can clean up its session file
+      try {
+        const sb = await getSandbox(params!.id);
+        if (sb?.name) {
+          const label = sb.name.replace(/^pi-daytona-/, "");
+          const sessionFile = join(process.cwd(), "sessions", `${label}.jsonl`);
+          await unlink(sessionFile).catch(() => {}); // best effort
+        }
+      } catch {
+        // Sandbox might already be gone — ignore
+      }
+
       await deleteSandbox(params!.id);
       json(res, 200, { ok: true });
     } catch (err: any) {
