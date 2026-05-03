@@ -111,9 +111,25 @@ function extractMessageText(msg) {
 async function loadThreads() {
   try {
     const data = await api("/api/sandboxes");
-    threads = data.sandboxes || [];
-    // Filter out sandboxes that are being destroyed or already destroyed
-    threads = threads.filter((s) => s.state !== "destroying" && s.state !== "destroyed");
+    let allSandboxes = data.sandboxes || [];
+
+    // Build map of task name → sandbox ID so tasks are clickable
+    const taskNames = new Set(tasks.map((t) => t.name));
+    window._taskSandboxMap = new Map();
+    for (const s of allSandboxes) {
+      const stripped = stripPrefix(s.name);
+      if (taskNames.has(stripped)) {
+        window._taskSandboxMap.set(stripped, s.id);
+      }
+    }
+
+    // Filter out task sandboxes and destroyed ones from the thread list
+    threads = allSandboxes.filter(
+      (s) =>
+        !taskNames.has(stripPrefix(s.name)) &&
+        s.state !== "destroying" &&
+        s.state !== "destroyed"
+    );
 
     // Show/hide Daytona badge
     if (data.daytonaConfigured) {
@@ -123,9 +139,14 @@ async function loadThreads() {
     }
 
     renderThreads();
+    renderTasks(); // re-render so active highlighting is correct
 
     // If selected thread disappeared, reset
-    if (selectedThreadId && !threads.find((t) => t.id === selectedThreadId)) {
+    if (
+      selectedThreadId &&
+      !threads.find((t) => t.id === selectedThreadId) &&
+      !Array.from(window._taskSandboxMap.values()).includes(selectedThreadId)
+    ) {
       selectThread(null);
     }
   } catch (err) {
@@ -269,7 +290,10 @@ function renderTasks() {
 
   for (const t of tasks) {
     const el = document.createElement("div");
-    el.className = "task-item";
+    const isActive =
+      selectedThreadId &&
+      window._taskSandboxMap?.get(t.name) === selectedThreadId;
+    el.className = "task-item" + (isActive ? " active" : "");
     el.dataset.taskName = t.name;
 
     const enabledClass = t.enabled ? "enabled" : "disabled";
@@ -290,6 +314,17 @@ function renderTasks() {
         <button class="task-delete" data-task-name="${escapeHtml(t.name)}" title="Delete">×</button>
       </div>
     `;
+
+    // Click to open the task's thread
+    el.addEventListener("click", (e) => {
+      if (e.target.closest("button")) return;
+      const sandboxId = window._taskSandboxMap?.get(t.name);
+      if (sandboxId) {
+        selectThread(sandboxId);
+      } else {
+        addSystemMessage(`Task sandbox not found — run the task first`, true);
+      }
+    });
 
     $taskList.appendChild(el);
   }
@@ -380,7 +415,16 @@ async function selectThread(threadId) {
     $threadName.textContent = stripPrefix(thread.name);
     $threadStatus.className = "status-dot " + (thread.state || "");
   } else {
-    $threadName.textContent = threadId;
+    // Check if this is a task thread
+    const taskEntry = Array.from(window._taskSandboxMap?.entries() || []).find(
+      ([, id]) => id === threadId
+    );
+    if (taskEntry) {
+      $threadName.textContent = taskEntry[0];
+      $threadStatus.className = "status-dot started";
+    } else {
+      $threadName.textContent = threadId;
+    }
   }
 
   // Clear messages
@@ -393,7 +437,11 @@ async function selectThread(threadId) {
   }
 
   // ── Auto-start if sandbox is stopped ──
-  if (thread && thread.state === "stopped") {
+  const isStopped =
+    thread?.state === "stopped" ||
+    (taskEntry && (await api(`/api/sandboxes/${threadId}`)).state === "stopped");
+
+  if (isStopped) {
     addSystemMessage("Sandbox is stopped — starting it…");
     try {
       await api(`/api/sandboxes/${threadId}/start`, { method: "POST" });
@@ -403,8 +451,8 @@ async function selectThread(threadId) {
       for (let i = 0; i < 30; i++) {
         await new Promise((r) => setTimeout(r, 2000));
         await loadThreads();
-        thread = threads.find((t) => t.id === threadId);
-        if (thread && thread.state === "started") {
+        const refreshed = threads.find((t) => t.id === threadId);
+        if (refreshed && refreshed.state === "started") {
           started = true;
           $threadStatus.className = "status-dot started";
           break;

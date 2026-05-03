@@ -138,6 +138,11 @@ body {
   background: var(--bg-hover);
 }
 
+.task-item.active {
+  background: var(--accent-muted);
+  border-color: var(--accent);
+}
+
 .task-row {
   display: flex;
   align-items: center;
