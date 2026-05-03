@@ -223,7 +223,7 @@ export class PiSidebar extends LitElement {
   render() {
     return html`
       <div class="sidebar-header">
-        <h1>pi-daytona-ux</h1>
+        <h1>pi-mainframe</h1>
         ${this.daytonaConfigured
           ? html`<thx-badge variant="pulse">DAYTONA</thx-badge>`
           : ''}
