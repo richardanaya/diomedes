@@ -1,6 +1,9 @@
 # pi-mainframe
 
-HTTP/SSE server wrapping [pi coding agent](https://github.com/mariozechner/pi-coding-agent) as a library, with optional [pi-daytona](https://github.com/richardanaya/pi-daytona) sandbox integration.
+HTTP/SSE server wrapping [pi coding agent](https://github.com/mariozechner/pi-coding-agent) as a library, with [pi-daytona](https://github.com/richardanaya/pi-daytona) sandbox integration.
+
+<img width="1724" height="1214" alt="image" src="https://github.com/user-attachments/assets/c5615f10-82a9-439e-b442-8b27c9e507bc" />
+
 
 ## Features
 
