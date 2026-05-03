@@ -432,7 +432,7 @@ export class PiApp extends LitElement {
               // data from turn_end
 
             } else if (eventType === 'tool-start') {
-              this._messages = [...this._messages, { role: 'tool', content: `🔧 ${data.toolName}` }];
+              // toolcall_end already shows the indicator; tool-start is redundant
             } else if (eventType === 'tool-end') {
               if (data.isError) {
                 this._messages = [...this._messages, { role: 'tool', content: `❌ ${data.toolName} error`, isError: true }];
