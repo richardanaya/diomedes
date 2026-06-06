@@ -2,179 +2,35 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const { fal } = require('@fal-ai/client');
-const { analyzeFrameWithGrok } = require('./lib/xai');
+
+const { directOpening, directBeat } = require('./lib/director');
+const sceneEngine = require('./lib/scene-engine');
+const ws = require('./lib/world-state');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const ENABLE_PREFETCH = (process.env.ENABLE_PREFETCH ?? 'true') === 'true';
 
-// Increase body limit for large JSON payloads
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.static('public'));
 
 fal.config({ credentials: process.env.FAL_KEY });
 
-// Model constants
-const IMAGE_MODEL = "openai/gpt-image-2";
-const IMAGE_EDIT_MODEL = "openai/gpt-image-2/edit";
-const IMAGE_SIZE = { width: 640, height: 480 };
-const STYLE_REFERENCE_SIZE = { width: 1920, height: 1080 };
-
-const PRESET_AESTHETICS = [
-  {
-    id: '1990s-point-click',
-    name: '1990s Point & Click',
-    imageUrl: 'https://v3b.fal.media/files/b/0a9d3f75/_cDqdvLd_dfQqE_FRlTSm_fn6VU8Xe.png',
-    prompt: 'point and click 1990s adventure game'
-  },
-  {
-    id: 'dark-souls-3',
-    name: 'Dark Souls 3',
-    imageUrl: 'https://v3b.fal.media/files/b/0a9d402b/2kXqQd_hD9KlSJ9YeTLNH_hDNii6Mx.png',
-    prompt: 'style of dark souls 3 video game'
-  }
-];
-
-function buildStyleReferencePrompt(styleText) {
-  return `make a style reference that shows a ${styleText}, a color palette, and various examples of scenes, character, and item styles. No text or UX elements. the point of this style reference document is to give enough stylistic examples for an AI to consistently replicate it.`;
-}
-
-function parseBoolean(value, defaultValue = true) {
-  if (value === true || value === 'true') return true;
-  if (value === false || value === 'false') return false;
-  return defaultValue;
-}
-
-async function callGptImageEdit(prompt, imageUrls) {
-  const imageResult = await fal.subscribe(IMAGE_EDIT_MODEL, {
-    input: {
-      prompt,
-      image_urls: imageUrls,
-      image_size: IMAGE_SIZE,
-      quality: 'low',
-      output_format: 'png'
-    }
-  });
-  return imageResult.data.images[0].url;
-}
-
-async function generateSceneImage({
-  sceneDescription,
-  aestheticPrompt,
-  styleImageUrl,
-  previousSceneImageUrl,
-  visualChangeDescription,
-  isSceneContinuation
-}) {
-  if (!styleImageUrl) throw new Error('styleImageUrl is required for scene generation');
-
-  const styleRefNote = 'The FIRST attached image is the aesthetic style reference only — match its art style, color palette, and rendering. Do not copy specific characters or scenes from it.';
-  const sceneRefNote = 'The SECOND attached image is the previous game scene — use it as the character and appearance reference.';
-  let imagePrompt;
-  let imageUrls;
-
-  const isContinuation = parseBoolean(isSceneContinuation, true);
-
-  if (!previousSceneImageUrl) {
-    imagePrompt = `Use the attached image as a aesthetic style reference only (not a character or scene reference): Create a point-and-click adventure game scene: ${sceneDescription}. Visual aesthetic: ${aestheticPrompt}. Match its art style, color palette, and rendering exactly. Establishing shot, no UI elements.`;
-    imageUrls = [styleImageUrl];
-  } else if (isContinuation) {
-    imagePrompt = `${styleRefNote} ${sceneRefNote} The player action: ${sceneDescription}. This is a CONTINUATION of the same scene in the second image. Visual changes to apply: ${visualChangeDescription}. Keep the same location, characters, and general composition — only depict the visual changes described. Visual aesthetic: ${aestheticPrompt}. No UI elements.`;
-    imageUrls = [styleImageUrl, previousSceneImageUrl];
-  } else {
-    imagePrompt = `${styleRefNote} ${sceneRefNote} PRESERVE the player character's appearance, clothing, face, body type, and any recurring characters exactly as they appear in the second image. The player action: ${sceneDescription}. This is a NEW location — change the environment, background, and setting completely. Do NOT reuse the previous room, layout, or camera angle. New scene to show: ${visualChangeDescription}. Visual aesthetic: ${aestheticPrompt}. Fresh establishing shot of the new place with the same characters, no UI elements.`;
-    imageUrls = [styleImageUrl, previousSceneImageUrl];
-  }
-
-  console.log(`  GPT Image edit: style ref + ${previousSceneImageUrl ? (isContinuation ? 'scene continuation' : 'new scene') : 'opening scene'}`);
-  console.log(`  Style image: ${styleImageUrl}`);
-  if (previousSceneImageUrl) console.log(`  Previous scene: ${previousSceneImageUrl}`);
-
-  try {
-    return await callGptImageEdit(imagePrompt, imageUrls);
-  } catch (err) {
-    if (previousSceneImageUrl && !isContinuation) {
-      console.warn('  New scene generation failed, retrying with stronger character continuity:', err.message);
-      const retryPrompt = `${styleRefNote} ${sceneRefNote} CRITICAL: the player character must look identical to how they appear in the second image — same face, hair, clothing, and proportions. The player action: ${sceneDescription}. NEW location: ${visualChangeDescription}. Change only the background and environment. Visual aesthetic: ${aestheticPrompt}. No UI elements.`;
-      return await callGptImageEdit(retryPrompt, [styleImageUrl, previousSceneImageUrl]);
-    }
-    throw err;
-  }
-}
-
-// ============================================================
-// SAM validation — finds masks for referring expressions
-// ============================================================
-async function validateElementsWithSAM(imageUrl, elements, idPrefix = Date.now()) {
-  if (!elements || elements.length === 0) return [];
-  console.log(`  SAM validating ${elements.length} elements...`);
-
-  const validated = [];
-  for (const el of elements) {
-    try {
-      const result = await fal.subscribe("fal-ai/sam-3/image", {
-        input: {
-          image_url: imageUrl,
-          prompt: el.referring_expression || el.referringExpression,
-          return_multiple_masks: false
-        }
-      });
-      if (result.data.masks?.length > 0) {
-        validated.push({
-          id: `el-${idPrefix}-${validated.length}`,
-          name: el.name,
-          action: el.action,
-          description: el.description,
-          is_scene_continuation: parseBoolean(el.is_scene_continuation, true),
-          visual_change_description: el.visual_change_description || '',
-          referring_expression: el.referring_expression || el.referringExpression,
-          maskUrl: result.data.masks[0].url
-        });
-      } else {
-        console.warn(`  [SAM DROP] "${el.name}" — "${el.referring_expression || el.referringExpression}"`);
-      }
-    } catch (err) {
-      console.warn(`  SAM failed: ${el.name}`);
-    }
-  }
-  console.log(`  SAM passed ${validated.length}/${elements.length}`);
-  return validated;
-}
-
 // ============================================================
 // Aesthetic presets & custom style reference generation
 // ============================================================
 app.get('/api/aesthetic-presets', (req, res) => {
-  res.json({ presets: PRESET_AESTHETICS });
+  res.json({ presets: sceneEngine.PRESET_AESTHETICS });
 });
 
 app.post('/api/generate-aesthetic', async (req, res) => {
   try {
     const { styleText } = req.body;
-    if (!styleText?.trim()) {
-      return res.status(400).json({ error: 'styleText is required' });
-    }
-
-    const prompt = buildStyleReferencePrompt(styleText.trim());
-    console.log('\n→ Generating custom aesthetic reference...');
-    console.log(`  Style: ${styleText.trim()}`);
-
-    const result = await fal.subscribe(IMAGE_MODEL, {
-      input: {
-        prompt,
-        image_size: STYLE_REFERENCE_SIZE,
-        quality: 'high',
-        output_format: 'png'
-      }
-    });
-
-    const imageUrl = result.data.images[0].url;
-    console.log(`  Style reference ready: ${imageUrl}\n`);
-
-    res.json({
-      imageUrl,
-      prompt: styleText.trim()
-    });
+    if (!styleText?.trim()) return res.status(400).json({ error: 'styleText is required' });
+    console.log('\n→ Generating custom aesthetic reference:', styleText.trim());
+    const imageUrl = await sceneEngine.generateStyleReference(styleText.trim());
+    res.json({ imageUrl, prompt: styleText.trim() });
   } catch (error) {
     console.error('Error generating aesthetic:', error);
     res.status(500).json({ error: 'Failed to generate aesthetic style' });
@@ -182,7 +38,217 @@ app.post('/api/generate-aesthetic', async (req, res) => {
 });
 
 // ============================================================
-// Adventure: Start a new adventure
+// Location resolution — the persistent world graph
+// ============================================================
+function resolveLocation(state, locationChange) {
+  if (!locationChange || locationChange.type !== 'move') {
+    const loc = ws.getLocation(state, state.currentLocationId);
+    return { node: loc, isNewLocation: false };
+  }
+
+  // Moving: reuse a known location if possible, otherwise create one.
+  let node = null;
+  if (locationChange.targetLocationId) {
+    node = ws.getLocation(state, locationChange.targetLocationId);
+  }
+  if (!node && locationChange.name) {
+    // match by name to avoid duplicate nodes for the same place
+    node = Object.values(state.locations).find(
+      l => l.name?.trim().toLowerCase() === locationChange.name.trim().toLowerCase()
+    );
+  }
+
+  if (node) {
+    if (locationChange.exits) ws.upsertLocation(state, { id: node.id, exits: locationChange.exits });
+    state.currentLocationId = node.id;
+    node.visitCount += 1;
+    return { node, isNewLocation: false }; // revisit: anchor to its cached image
+  }
+
+  node = ws.upsertLocation(state, {
+    id: locationChange.targetLocationId,
+    name: locationChange.name || 'New Area',
+    description: locationChange.description || '',
+    exits: locationChange.exits || {},
+  });
+  state.currentLocationId = node.id;
+  node.visitCount = 1;
+  return { node, isNewLocation: true };
+}
+
+// ============================================================
+// Core: render + ground a scene for a given (already-mutated) state
+// ============================================================
+async function renderAndGround(state, { node, isNewLocation, isOpening, renderBrief, beatNarrative, presentCharacters = [] }) {
+  // Character reference images (best-effort, capped per turn).
+  const npcRefUrls = [];
+  let npcGenBudget = sceneEngine.ENABLE_NPC_REFS ? 1 : 0;
+  for (const c of presentCharacters) {
+    const char = state.characters[c.id] || Object.values(state.characters).find(x => x.name === c.name);
+    if (!char) continue;
+    if (!char.referenceImageUrl && char.recurring && npcGenBudget > 0) {
+      npcGenBudget -= 1;
+      char.referenceImageUrl = await sceneEngine.generateCharacterReference({
+        description: char.description,
+        aestheticPrompt: state.aesthetic.prompt,
+        styleImageUrl: state.aesthetic.styleImageUrl,
+      });
+    }
+    if (char.referenceImageUrl) npcRefUrls.push(char.referenceImageUrl);
+  }
+
+  // Render the Director's brief.
+  let imageUrl = await sceneEngine.renderScene({
+    renderBrief,
+    aestheticPrompt: state.aesthetic.prompt,
+    styleImageUrl: state.aesthetic.styleImageUrl,
+    playerRefUrl: state.player.referenceImageUrl,
+    locationAnchorUrl: isNewLocation ? null : node?.canonicalImageUrl || null,
+    npcRefUrls,
+    isOpening: !!isOpening,
+    isNewLocation,
+    seed: node?.seed,
+  });
+
+  // Optional fidelity check (regenerate once if the image is clearly off-brief).
+  if (!(await sceneEngine.fidelityCheck(imageUrl, renderBrief))) {
+    console.warn('  Fidelity check failed — regenerating once.');
+    imageUrl = await sceneEngine.renderScene({
+      renderBrief,
+      aestheticPrompt: state.aesthetic.prompt,
+      styleImageUrl: state.aesthetic.styleImageUrl,
+      playerRefUrl: state.player.referenceImageUrl,
+      locationAnchorUrl: isNewLocation ? null : node?.canonicalImageUrl || null,
+      npcRefUrls,
+      isOpening: !!isOpening,
+      isNewLocation,
+      seed: node?.seed,
+    });
+  }
+
+  ws.setLocationImage(state, node.id, imageUrl);
+
+  // Ground: find clickable regions, informed by world state.
+  const persistentElements = (node.persistentElements || []).filter(e => !e.consumed);
+  const avoidActions = ws.recentChronicle(state, 6).map(c => c.action).filter(Boolean);
+  const grounded = await sceneEngine.groundScene({
+    imageUrl,
+    context: ws.summarizeForDirector(state),
+    directorNarrative: beatNarrative,
+    persistentElements,
+    avoidActions,
+  });
+  const elements = await sceneEngine.groundElements({ imageUrl, elements: grounded.elements });
+  ws.syncLocationElements(state, node.id, elements);
+
+  // Resolve the recommended next action id for prefetch / UX.
+  let primaryElementId = elements[0]?.id || null;
+  const primName = grounded.elements[grounded.primaryIndex]?.name;
+  if (primName) {
+    const match = elements.find(e => e.name === primName);
+    if (match) primaryElementId = match.id;
+  }
+
+  return { imageUrl, elements, primaryElementId };
+}
+
+// ============================================================
+// Payload builder (what the frontend renders)
+// ============================================================
+function buildPayload(state, { imageUrl, elements, primaryElementId, narrative }) {
+  const loc = ws.getLocation(state, state.currentLocationId);
+  return {
+    sessionId: state.sessionId,
+    imageUrl,
+    narrative: narrative || '',
+    elements,
+    primaryElementId,
+    arc: {
+      goal: state.arc.goal,
+      act: state.arc.act,
+      beatsCompleted: state.arc.beatsCompleted,
+      targetBeats: state.arc.targetBeats,
+      objectives: state.arc.objectives,
+    },
+    inventory: state.inventory.map(i => ({ name: i.name, description: i.description })),
+    location: loc ? { id: loc.id, name: loc.name } : null,
+    storySoFar: state.chronicle.map(c => c.outcome).filter(Boolean),
+    gameOver: state.gameOver,
+  };
+}
+
+function respond(session, payload) {
+  return {
+    ...payload,
+    nav: {
+      index: session.historyIndex,
+      total: session.history.length,
+      thumbnails: ws.historyThumbnails(session),
+    },
+  };
+}
+
+// ============================================================
+// Compute the next scene for a chosen element (mutates `state`)
+// ============================================================
+async function computeNextScene(state, element) {
+  state.turn += 1;
+
+  const summary = ws.summarizeForDirector(state);
+  const beat = await directBeat({ summary, element });
+
+  // Apply consequences with guardrails.
+  const rejected = ws.applyStateChanges(state, beat.stateChanges);
+  if (rejected.length) console.warn('  [consistency] rejected:', rejected.join(', '));
+  ws.addBibleFacts(state, beat.newFacts);
+  if (beat.consumesElement) ws.markElementConsumed(state, state.currentLocationId, element.name);
+  for (const c of beat.charactersPresent) {
+    if (c.name) ws.upsertCharacter(state, c);
+  }
+
+  // Resolve where the player ends up (persistent world graph).
+  const { node, isNewLocation } = resolveLocation(state, beat.locationChange);
+
+  // Memory + arc.
+  ws.addChronicle(state, { action: element.action, outcome: beat.outcome, newFacts: beat.newFacts });
+  ws.updateArc(state, beat.arcUpdate);
+  if (beat.ending) state.gameOver = beat.ending;
+
+  const { imageUrl, elements, primaryElementId } = await renderAndGround(state, {
+    node,
+    isNewLocation,
+    renderBrief: beat.renderBrief,
+    beatNarrative: beat.narrative,
+    presentCharacters: beat.charactersPresent,
+  });
+
+  return buildPayload(state, { imageUrl, elements, primaryElementId, narrative: beat.narrative });
+}
+
+// ============================================================
+// Speculative prefetch of the most likely next scene
+// ============================================================
+function kickPrefetch(session, payload) {
+  if (!ENABLE_PREFETCH || payload.gameOver) return;
+  const element = (payload.elements || []).find(e => e.id === payload.primaryElementId);
+  if (!element) return;
+  const version = session.sceneVersion;
+
+  (async () => {
+    try {
+      const cloned = ws.clone(session.state);
+      const nextPayload = await computeNextScene(cloned, element);
+      if (session.sceneVersion !== version) return; // stale; player moved on
+      session.prefetch.set(element.id, { version, payload: nextPayload, stateSnapshot: cloned });
+      console.log(`  [prefetch] ready for "${element.action}"`);
+    } catch (e) {
+      // prefetch is best-effort
+    }
+  })();
+}
+
+// ============================================================
+// Endpoint: start a new adventure
 // ============================================================
 app.post('/api/start-adventure', async (req, res) => {
   try {
@@ -193,69 +259,55 @@ app.post('/api/start-adventure', async (req, res) => {
 
     console.log('\n========================================');
     console.log('NEW ADVENTURE:', plot.slice(0, 100));
-    console.log('AESTHETIC:', aestheticPrompt);
     console.log('========================================');
 
-    // Step 1: Generate the first image from the plot using the style reference
-    console.log('→ Generating opening image...');
-    const imageUrl = await generateSceneImage({
-      sceneDescription: plot,
+    const session = ws.createSession({ plot, aesthetic: { prompt: aestheticPrompt, styleImageUrl } });
+    const state = session.state;
+
+    // 1. Director establishes the world.
+    console.log('→ Director establishing world...');
+    const opening = await directOpening({ plot, aesthetic: state.aesthetic });
+    state.title = opening.title;
+    state.arc.goal = opening.goal;
+    state.arc.targetBeats = opening.targetBeats;
+    state.arc.objectives = opening.objectives;
+    state.player.description = opening.playerDescription;
+    ws.addBibleFacts(state, opening.bibleFacts);
+    const node = ws.upsertLocation(state, opening.openingLocation);
+    state.currentLocationId = node.id;
+    node.visitCount = 1;
+
+    // 2. Lock the protagonist's look.
+    console.log('→ Generating protagonist reference...');
+    state.player.referenceImageUrl = await sceneEngine.generateCharacterReference({
+      description: opening.playerDescription,
       aestheticPrompt,
-      styleImageUrl
+      styleImageUrl,
     });
 
-    // Step 2: Grok analyzes the image (vision) with plot context → gets elements
-    const plotHistory = [`The adventure begins: ${plot}`];
-    const analysis = await analyzeFrameWithGrok(imageUrl, plot, plotHistory, aestheticPrompt);
+    // 3. Render + ground the opening scene.
+    console.log('→ Rendering opening scene...');
+    const { imageUrl, elements, primaryElementId } = await renderAndGround(state, {
+      node,
+      isNewLocation: false,
+      isOpening: true,
+      renderBrief: opening.renderBrief,
+      beatNarrative: opening.openingNarrative,
+    });
 
-    console.log('\n---------- FRAME ANALYSIS ----------');
-    console.log(JSON.stringify(analysis, null, 2));
-    console.log('-------------------------------------\n');
+    ws.addChronicle(state, { action: 'The adventure begins', outcome: opening.openingNarrative });
 
-    // Step 3: SAM validates each element against the image
-    const elementIdPrefix = Date.now();
-    const validatedElements = await validateElementsWithSAM(imageUrl, analysis.elements || [], elementIdPrefix);
-
-    // Fallback if too few elements passed SAM
-    if (validatedElements.length < 2) {
-      console.log('  → Running fallback SAM probes...');
-      const fallbackPrompts = [
-        "a person or figure", "a prominent object", "an architectural feature",
-        "a light source or bright area", "a doorway or opening"
-      ];
-      for (const prompt of fallbackPrompts) {
-        if (validatedElements.length >= 4) break;
-        try {
-          const r = await fal.subscribe("fal-ai/sam-3/image", {
-            input: { image_url: imageUrl, prompt, return_multiple_masks: false }
-          });
-          if (r.data.masks?.length > 0) {
-            validatedElements.push({
-              id: `fb-${elementIdPrefix}-${validatedElements.length}`,
-              name: prompt.charAt(0).toUpperCase() + prompt.slice(1),
-              action: "Examine",
-              description: "Something catches your attention.",
-              is_scene_continuation: true,
-              visual_change_description: "The player examines the object more closely, with subtle lighting emphasis on the area of interest.",
-              referring_expression: prompt,
-              maskUrl: r.data.masks[0].url
-            });
-          }
-        } catch (e) { /* skip */ }
-      }
-    }
-
-    console.log(`Adventure ready: ${validatedElements.length} interactive elements\n`);
-
-    res.json({
+    const payload = buildPayload(state, {
       imageUrl,
-      narrative: analysis.sceneNarrative || plot,
-      elements: validatedElements,
-      plotHistory,
-      aestheticPrompt,
-      styleImageUrl
+      elements,
+      primaryElementId,
+      narrative: opening.openingNarrative,
     });
+    ws.commitScene(session, payload, 'Opening scene');
 
+    console.log(`Adventure ready: ${elements.length} elements\n`);
+    kickPrefetch(session, payload);
+    res.json(respond(session, payload));
   } catch (error) {
     console.error('Error starting adventure:', error);
     res.status(500).json({ error: 'Failed to start adventure' });
@@ -263,115 +315,60 @@ app.post('/api/start-adventure', async (req, res) => {
 });
 
 // ============================================================
-// Adventure: Action cycle — generate next scene image + analysis
+// Endpoint: take an action
 // ============================================================
-app.post('/api/generate-action-scene', async (req, res) => {
+app.post('/api/action', async (req, res) => {
   try {
-    const {
-      imageUrl,
-      action,
-      description,
-      visualChangeDescription,
-      isSceneContinuation,
-      plot,
-      plotHistory,
-      aestheticPrompt,
-      styleImageUrl
-    } = req.body;
+    const { sessionId, elementId } = req.body;
+    const session = ws.getSession(sessionId);
+    if (!session) return res.status(404).json({ error: 'Session not found. Start a new adventure.' });
+    if (session.state.gameOver) return res.status(400).json({ error: 'The adventure has ended.' });
 
-    if (!imageUrl || !action) {
-      return res.status(400).json({ error: 'imageUrl and action required' });
-    }
-    if (!styleImageUrl) {
-      return res.status(400).json({ error: 'styleImageUrl is required' });
-    }
+    const current = session.history[session.historyIndex]?.payload;
+    const element = (current?.elements || []).find(e => e.id === elementId);
+    if (!element) return res.status(400).json({ error: 'Unknown element for current scene.' });
 
-    const continuation = parseBoolean(isSceneContinuation, true);
-    const visualChange = visualChangeDescription?.trim()
-      || (description ? `${action}. ${description}` : action);
-
-    console.log(`\n=== Action Scene: "${action}" (${continuation ? 'continuation' : 'new scene'}) ===`);
-    console.log(`  isSceneContinuation raw: ${JSON.stringify(isSceneContinuation)} → ${continuation}`);
-
-    const sceneDescription = description
-      ? `${action}: ${description}`
-      : action;
-
-    // Step 1: Generate next scene image
-    console.log('  [1/3] Generating scene image...');
-    const sceneImageUrl = await generateSceneImage({
-      sceneDescription,
-      aestheticPrompt,
-      styleImageUrl,
-      previousSceneImageUrl: imageUrl,
-      visualChangeDescription: visualChange,
-      isSceneContinuation: continuation
-    });
-    console.log(`  Scene ready: ${sceneImageUrl}`);
-
-    // Step 2: Grok analyzes the new image
-    console.log('  [2/3] Grok analyzing scene...');
-    const updatedHistory = [...(plotHistory || []), `The player chose to: ${action}.`];
-    let analysis = await analyzeFrameWithGrok(sceneImageUrl, plot, updatedHistory, aestheticPrompt);
-
-    if (!analysis.elements || analysis.elements.length === 0) {
-      console.warn('  Analysis empty, retrying with previous scene...');
-      analysis = await analyzeFrameWithGrok(imageUrl, plot, updatedHistory, aestheticPrompt);
+    // Prefetch hit?
+    const cached = session.prefetch.get(elementId);
+    if (cached && cached.version === session.sceneVersion) {
+      console.log(`\n=== Action (prefetched): "${element.action}" ===`);
+      session.state = ws.clone(cached.stateSnapshot);
+      ws.commitScene(session, cached.payload, element.action);
+      kickPrefetch(session, cached.payload);
+      return res.json(respond(session, cached.payload));
     }
 
-    console.log('\n---------- FRAME ANALYSIS ----------');
-    console.log(JSON.stringify(analysis, null, 2));
-    console.log('-------------------------------------\n');
-
-    // Step 3: SAM validates
-    console.log('  [3/3] SAM scanning...');
-    const elementIdPrefix = Date.now();
-    const validatedElements = await validateElementsWithSAM(sceneImageUrl, analysis.elements || [], elementIdPrefix);
-
-    if (validatedElements.length < 2) {
-      const fallbackPrompts = [
-        "a person or figure", "a prominent object", "an architectural feature",
-        "a light source or bright area", "a doorway or opening"
-      ];
-      for (const p of fallbackPrompts) {
-        if (validatedElements.length >= 4) break;
-        try {
-          const r = await fal.subscribe("fal-ai/sam-3/image", {
-            input: { image_url: sceneImageUrl, prompt: p, return_multiple_masks: false }
-          });
-          if (r.data.masks?.length > 0) {
-            validatedElements.push({
-              id: `fb-${elementIdPrefix}-${validatedElements.length}`,
-              name: p.charAt(0).toUpperCase() + p.slice(1),
-              action: "Examine",
-              description: "Something catches your attention.",
-              is_scene_continuation: true,
-              visual_change_description: "The player examines the object more closely, with subtle lighting emphasis on the area of interest.",
-              referring_expression: p,
-              maskUrl: r.data.masks[0].url
-            });
-          }
-        } catch (e) { /* skip */ }
-      }
-    }
-
-    console.log(`  Done: ${validatedElements.length} elements\n`);
-
-    res.json({
-      imageUrl: sceneImageUrl,
-      narrative: analysis.sceneNarrative || '',
-      elements: validatedElements,
-      plotHistory: updatedHistory
-    });
-
+    console.log(`\n=== Action: "${element.action}" ===`);
+    const payload = await computeNextScene(session.state, element);
+    ws.commitScene(session, payload, element.action);
+    kickPrefetch(session, payload);
+    res.json(respond(session, payload));
   } catch (error) {
-    console.error('Error in action cycle:', error);
+    console.error('Error in action:', error);
     res.status(500).json({ error: 'Failed to process action' });
+  }
+});
+
+// ============================================================
+// Endpoint: rewind / branch the timeline
+// ============================================================
+app.post('/api/restore', (req, res) => {
+  try {
+    const { sessionId, index } = req.body;
+    const session = ws.getSession(sessionId);
+    if (!session) return res.status(404).json({ error: 'Session not found.' });
+    const payload = ws.restoreTo(session, index);
+    if (!payload) return res.status(400).json({ error: 'Invalid history index.' });
+    kickPrefetch(session, payload);
+    res.json(respond(session, payload));
+  } catch (error) {
+    console.error('Error restoring:', error);
+    res.status(500).json({ error: 'Failed to restore scene' });
   }
 });
 
 app.listen(PORT, () => {
   console.log(`\n🚀 Diomedes running on http://localhost:${PORT}`);
   if (!process.env.FAL_KEY) console.warn('⚠️  FAL_KEY not found');
-  if (!process.env.XAI_API_KEY) console.warn('⚠️  XAI_API_KEY not found (Grok vision disabled)');
+  if (!process.env.XAI_API_KEY) console.warn('⚠️  XAI_API_KEY not found (Director + Grounder disabled)');
 });

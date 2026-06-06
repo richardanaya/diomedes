@@ -1,8 +1,13 @@
 // ============================================================
-// Diomedes — Adventure Loop Frontend
+// Diomedes — Adventure Loop Frontend (session-based)
+//
+// World state now lives on the server. The client holds a sessionId and the
+// latest scene payload, and drives navigation through /api/action and
+// /api/restore. Server payloads carry the goal, objectives, inventory,
+// location, arc progress, ending state, and a history thumbnail strip.
 // ============================================================
 
-const API_BASE = 'http://localhost:3000/api';
+const API_BASE = `${location.origin}/api`;
 const SCENE_WIDTH = 640;
 const SCENE_HEIGHT = 480;
 
@@ -13,15 +18,15 @@ function parseBoolean(value, defaultValue = true) {
 }
 
 // State
+let sessionId = null;
+let currentPayload = null;     // last scene payload from the server
+let nav = { index: 0, total: 0, thumbnails: [] };
 let currentImageUrl = null;
-let currentElements = [];     // { id, name, action, description, maskUrl }
-let plotHistory = [];
+let currentElements = [];
 let currentPlot = '';
-let selectedAesthetic = null; // { imageUrl, prompt, name? }
+let selectedAesthetic = null;  // { imageUrl, prompt, name? }
 let pendingCustomAesthetic = null;
 let maskCanvases = {};
-let sceneHistory = [];   // snapshots of each scene state
-let historyIndex = -1;   // current position in timeline
 
 // ============================================================
 // Loading
@@ -74,13 +79,15 @@ async function loadPresetStyles() {
         (data.presets || []).forEach(preset => {
             const card = document.createElement('button');
             card.type = 'button';
-            card.className = 'text-left rounded-xl border border-slate-700 bg-slate-900 hover:border-emerald-600 hover:bg-slate-800 transition-colors overflow-hidden';
+            card.className = 'group text-left rounded-xl border border-ink-800 bg-ink-900 hover:border-ink-400 transition-colors overflow-hidden';
             card.innerHTML = `
-                <img src="${escapeHtml(preset.imageUrl)}" alt="${escapeHtml(preset.name)}"
-                     class="w-full h-36 object-cover">
+                <div class="overflow-hidden">
+                    <img src="${escapeHtml(preset.imageUrl)}" alt="${escapeHtml(preset.name)}"
+                         class="w-full h-40 object-cover grayscale group-hover:grayscale-0 group-hover:scale-[1.03] transition-all duration-500">
+                </div>
                 <div class="p-4">
-                    <div class="font-medium">${escapeHtml(preset.name)}</div>
-                    <div class="text-xs text-slate-400 mt-1">${escapeHtml(preset.prompt)}</div>
+                    <div class="font-medium text-ink-100">${escapeHtml(preset.name)}</div>
+                    <div class="text-xs text-ink-400 mt-1">${escapeHtml(preset.prompt)}</div>
                 </div>
             `;
             card.onclick = () => selectPresetAesthetic(preset);
@@ -92,41 +99,25 @@ async function loadPresetStyles() {
 }
 
 function selectPresetAesthetic(preset) {
-    selectedAesthetic = {
-        imageUrl: preset.imageUrl,
-        prompt: preset.prompt,
-        name: preset.name
-    };
+    selectedAesthetic = { imageUrl: preset.imageUrl, prompt: preset.prompt, name: preset.name };
     showPlotScreen();
 }
 
 async function generateCustomAesthetic() {
     const styleText = document.getElementById('custom-style-input').value.trim();
-    if (!styleText) {
-        alert('Please describe your aesthetic first.');
-        return;
-    }
+    if (!styleText) { alert('Please describe your aesthetic first.'); return; }
 
     showLoading('Generating style reference...');
-
     try {
         const res = await fetch(`${API_BASE}/generate-aesthetic`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ styleText })
         });
-
-        if (!res.ok) {
-            const err = await res.json();
-            throw new Error(err.error || 'Failed to generate style');
-        }
+        if (!res.ok) throw new Error((await res.json()).error || 'Failed to generate style');
 
         const data = await res.json();
-        pendingCustomAesthetic = {
-            imageUrl: data.imageUrl,
-            prompt: data.prompt
-        };
-
+        pendingCustomAesthetic = { imageUrl: data.imageUrl, prompt: data.prompt };
         document.getElementById('custom-style-image').src = data.imageUrl;
         document.getElementById('custom-style-label').textContent = data.prompt;
         document.getElementById('custom-style-preview').classList.remove('hidden');
@@ -145,59 +136,218 @@ function confirmCustomAesthetic() {
 }
 
 // ============================================================
-// Scene history / timeline
+// Start Adventure
 // ============================================================
-function createSnapshot(data, label) {
-    return {
-        label,
-        imageUrl: data.imageUrl,
-        elements: JSON.parse(JSON.stringify(data.elements || [])),
-        narrative: data.narrative || '',
-        plotHistory: [...(data.plotHistory || plotHistory)]
-    };
+async function startAdventure() {
+    const plot = document.getElementById('plot-input').value.trim();
+    if (!selectedAesthetic) { alert('Please choose an aesthetic style first.'); showStyleScreen(); return; }
+    if (!plot) { alert('Please describe the plot.'); return; }
+
+    currentPlot = plot;
+    showLoading('Generating opening scene...');
+
+    try {
+        const res = await fetch(`${API_BASE}/start-adventure`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                plot,
+                aestheticPrompt: selectedAesthetic.prompt,
+                styleImageUrl: selectedAesthetic.imageUrl
+            })
+        });
+        if (!res.ok) throw new Error((await res.json()).error || 'Failed to start adventure');
+
+        const payload = await res.json();
+        sessionId = payload.sessionId;
+
+        document.getElementById('plot-screen').classList.add('hidden');
+        document.getElementById('scene-screen').classList.remove('hidden');
+        document.getElementById('header-bar').classList.remove('hidden');
+
+        applyPayload(payload);
+    } catch (error) {
+        console.error(error);
+        alert('Failed: ' + error.message);
+    } finally {
+        hideLoading();
+    }
 }
 
-function initSceneHistory(data, label) {
-    sceneHistory = [createSnapshot(data, label)];
-    historyIndex = 0;
+// ============================================================
+// Apply a server payload to the UI
+// ============================================================
+function applyPayload(payload) {
+    currentPayload = payload;
+    nav = payload.nav || nav;
+    renderScene(payload);
+    renderSidebar(payload);
     updateHistoryNav();
+    if (payload.gameOver) showEnding(payload.gameOver);
+    else hideEnding();
+    hideLoading();
 }
 
-function pushSceneHistory(data, label) {
-    sceneHistory = sceneHistory.slice(0, historyIndex + 1);
-    sceneHistory.push(createSnapshot(data, label));
-    historyIndex = sceneHistory.length - 1;
-    updateHistoryNav();
+// ============================================================
+// Render scene image + actions
+// ============================================================
+function renderScene(payload) {
+    currentImageUrl = payload.imageUrl;
+    currentElements = payload.elements || [];
+
+    const image = document.getElementById('scene-image');
+    image.src = payload.imageUrl;
+    image.style.visibility = 'visible';
+
+    const narrativeDiv = document.getElementById('scene-narrative');
+    if (payload.narrative) {
+        narrativeDiv.innerHTML = escapeHtml(payload.narrative);
+        narrativeDiv.classList.remove('hidden');
+    } else {
+        narrativeDiv.classList.add('hidden');
+    }
+
+    // Location + arc status
+    document.getElementById('scene-location').textContent = payload.location?.name || '';
+    document.getElementById('scene-act').textContent = payload.arc?.act ? `Act: ${payload.arc.act}` : '';
+    const pct = payload.arc && payload.arc.targetBeats
+        ? Math.min(100, Math.round((payload.arc.beatsCompleted / payload.arc.targetBeats) * 100))
+        : 0;
+    document.getElementById('arc-progress-bar').style.width = pct + '%';
+
+    maskCanvases = {};
+
+    const actionsList = document.getElementById('actions-list');
+    actionsList.innerHTML = '';
+
+    if (payload.gameOver) {
+        actionsList.innerHTML = '<div class="text-sm text-ink-500 font-serif italic">The story has ended.</div>';
+    }
+
+    (payload.elements || []).forEach(el => {
+        const isPrimary = el.id === payload.primaryElementId;
+        const sameScene = parseBoolean(el.is_scene_continuation, true);
+        const div = document.createElement('div');
+        div.className = 'action-item group flex items-start gap-x-3 p-3 rounded-xl cursor-pointer transition-colors border ' +
+            (isPrimary ? 'border-ink-600 bg-ink-850' : 'border-transparent hover:border-ink-700 hover:bg-ink-850');
+        div.dataset.elementId = el.id;
+        div.innerHTML = `
+            <div class="w-1.5 h-1.5 mt-2 rounded-full flex-shrink-0 ${isPrimary ? 'bg-ink-100' : 'bg-ink-500 group-hover:bg-ink-300'} transition-colors"></div>
+            <div class="flex-1 min-w-0">
+                <div class="font-medium text-sm text-ink-100">${escapeHtml(el.name)} ${isPrimary ? '<span class="label text-ink-400 align-middle">suggested</span>' : ''}</div>
+                <div class="text-xs text-ink-300 mt-0.5">${escapeHtml(el.action)}</div>
+                ${el.description ? `<div class="text-xs text-ink-500 mt-0.5 font-serif italic">${escapeHtml(el.description)}</div>` : ''}
+                <div class="mt-1.5 pt-1.5 border-t hairline">
+                    <span class="label ${sameScene ? 'text-ink-500' : 'text-ink-200'}">${sameScene ? '↻ Same scene' : '→ New scene'}</span>
+                </div>
+            </div>
+        `;
+        div.onclick = () => handleAction(el);
+        div.addEventListener('mouseenter', () => highlightElement(el.id));
+        div.addEventListener('mouseleave', clearHighlight);
+        actionsList.appendChild(div);
+    });
+
+    setupHitTesting(payload);
 }
 
-function restoreSceneSnapshot(snapshot) {
-    plotHistory = [...snapshot.plotHistory];
-    renderScene(snapshot);
+// ============================================================
+// Render sidebar: goal, objectives, inventory
+// ============================================================
+function renderSidebar(payload) {
+    document.getElementById('goal-text').textContent = payload.arc?.goal || '';
+
+    const objList = document.getElementById('objectives-list');
+    const objectives = payload.arc?.objectives || [];
+    objList.innerHTML = objectives.length
+        ? objectives.map(o => `
+            <div class="flex items-start gap-2 text-xs ${o.done ? 'text-ink-500 line-through' : 'text-ink-200'}">
+                <span class="${o.done ? 'text-ink-300' : 'text-ink-500'}">${o.done ? '✓' : '○'}</span>
+                <span>${escapeHtml(o.text)}</span>
+            </div>`).join('')
+        : '<div class="text-xs text-ink-500">No objectives yet.</div>';
+
+    const inv = document.getElementById('inventory-list');
+    const items = payload.inventory || [];
+    inv.innerHTML = items.length
+        ? items.map(i => `<span class="px-2.5 py-1 bg-ink-800 border border-ink-700 rounded-lg text-ink-200" title="${escapeHtml(i.description || '')}">${escapeHtml(i.name)}</span>`).join('')
+        : '<span class="text-ink-500">Empty</span>';
+}
+
+// ============================================================
+// Ending
+// ============================================================
+function showEnding(gameOver) {
+    document.getElementById('ending-title').textContent = gameOver.type === 'lose' ? 'Game Over' : 'The End';
+    document.getElementById('ending-title').className =
+        'font-serif text-4xl tracking-tightest mb-5 ' + (gameOver.type === 'lose' ? 'text-ink-400' : 'text-ink-100');
+    document.getElementById('ending-text').textContent = gameOver.text || '';
+    document.getElementById('ending-overlay').classList.remove('hidden');
+    document.getElementById('ending-overlay').classList.add('flex');
+}
+function hideEnding() {
+    document.getElementById('ending-overlay').classList.add('hidden');
+    document.getElementById('ending-overlay').classList.remove('flex');
+}
+
+// ============================================================
+// Handle action click
+// ============================================================
+async function handleAction(element) {
+    if (currentPayload?.gameOver) return;
+    document.getElementById('actions-list').innerHTML = '';
+    showLoading('Generating scene...');
+
+    try {
+        const res = await fetch(`${API_BASE}/action`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sessionId, elementId: element.id })
+        });
+        if (!res.ok) throw new Error((await res.json()).error || 'Generation failed');
+        applyPayload(await res.json());
+    } catch (error) {
+        console.error(error);
+        alert('Failed: ' + error.message);
+        if (currentPayload) renderScene(currentPayload); // restore actions
+        hideLoading();
+    }
+}
+
+// ============================================================
+// History navigation (server-authoritative)
+// ============================================================
+async function restoreTo(index) {
+    if (!sessionId || index < 0 || index >= nav.total) return;
+    showLoading('Rewinding...');
+    try {
+        const res = await fetch(`${API_BASE}/restore`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sessionId, index })
+        });
+        if (!res.ok) throw new Error((await res.json()).error || 'Restore failed');
+        applyPayload(await res.json());
+    } catch (error) {
+        console.error(error);
+        hideLoading();
+    }
 }
 
 function navigateHistory(delta) {
-    const next = historyIndex + delta;
-    if (next < 0 || next >= sceneHistory.length) return;
-    historyIndex = next;
-    restoreSceneSnapshot(sceneHistory[historyIndex]);
-    updateHistoryNav();
+    restoreTo(nav.index + delta);
 }
 
 function jumpToHistory(index) {
-    if (index < 0 || index >= sceneHistory.length) return;
-    historyIndex = index;
-    restoreSceneSnapshot(sceneHistory[historyIndex]);
-    updateHistoryNav();
+    restoreTo(index);
     const dialog = document.getElementById('history-dialog');
-    if (dialog && !dialog.classList.contains('hidden')) renderHistoryDialog();
+    if (dialog && !dialog.classList.contains('hidden')) setTimeout(renderHistoryDialog, 50);
 }
 
 function updateHistoryNav() {
-    const canBack = historyIndex > 0;
-    const canForward = historyIndex < sceneHistory.length - 1;
-    const positionText = sceneHistory.length > 0
-        ? `Step ${historyIndex + 1} of ${sceneHistory.length}`
-        : '';
+    const canBack = nav.index > 0;
+    const canForward = nav.index < nav.total - 1;
+    const positionText = nav.total > 0 ? `Step ${nav.index + 1} of ${nav.total}` : '';
 
     ['history-back-btn', 'dialog-history-back'].forEach(id => {
         const btn = document.getElementById(id);
@@ -218,167 +368,11 @@ function updateHistoryNav() {
 }
 
 // ============================================================
-// Start Adventure
-// ============================================================
-async function startAdventure() {
-    const plot = document.getElementById('plot-input').value.trim();
-
-    if (!selectedAesthetic) {
-        alert('Please choose an aesthetic style first.');
-        showStyleScreen();
-        return;
-    }
-    if (!plot) {
-        alert('Please describe the plot.');
-        return;
-    }
-
-    currentPlot = plot;
-
-    showLoading('Generating opening scene...');
-
-    try {
-        const res = await fetch(`${API_BASE}/start-adventure`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                plot,
-                aestheticPrompt: selectedAesthetic.prompt,
-                styleImageUrl: selectedAesthetic.imageUrl
-            })
-        });
-
-        if (!res.ok) {
-            const err = await res.json();
-            throw new Error(err.error || 'Failed to start adventure');
-        }
-
-        const data = await res.json();
-        console.log('Adventure started:', data);
-
-        currentImageUrl = data.imageUrl;
-        currentElements = data.elements;
-        plotHistory = data.plotHistory || [`The adventure begins: ${plot}`];
-
-        document.getElementById('plot-screen').classList.add('hidden');
-        document.getElementById('scene-screen').classList.remove('hidden');
-        document.getElementById('header-bar').classList.remove('hidden');
-
-        initSceneHistory(data, 'Opening scene');
-        renderScene(data);
-
-    } catch (error) {
-        console.error(error);
-        alert('Failed: ' + error.message);
-    } finally {
-        hideLoading();
-    }
-}
-
-// ============================================================
-// Render scene
-// ============================================================
-function renderScene(data) {
-    currentImageUrl = data.imageUrl;
-    currentElements = data.elements || [];
-    if (data.plotHistory) plotHistory = [...data.plotHistory];
-
-    const image = document.getElementById('scene-image');
-    image.src = data.imageUrl;
-    image.style.visibility = 'visible';
-
-    const narrativeDiv = document.getElementById('scene-narrative');
-    if (data.narrative) {
-        narrativeDiv.innerHTML = data.narrative;
-        narrativeDiv.classList.remove('hidden');
-    } else {
-        narrativeDiv.classList.add('hidden');
-    }
-
-    maskCanvases = {};
-
-    const actionsList = document.getElementById('actions-list');
-    actionsList.innerHTML = '';
-
-    (data.elements || []).forEach(el => {
-        const div = document.createElement('div');
-        div.className = 'action-item flex items-start gap-x-3 p-3 rounded-xl hover:bg-slate-800 cursor-pointer transition-colors border border-transparent hover:border-slate-700';
-        div.dataset.elementId = el.id;
-        div.innerHTML = `
-            <div class="w-2.5 h-2.5 mt-1.5 rounded-full flex-shrink-0 bg-emerald-400"></div>
-            <div class="flex-1 min-w-0">
-                <div class="font-medium text-sm">${escapeHtml(el.name)}</div>
-                <div class="text-xs text-slate-400">${escapeHtml(el.action)}</div>
-                ${el.description ? `<div class="text-xs text-slate-500 mt-0.5 italic">${escapeHtml(el.description)}</div>` : ''}
-                <div class="text-xs mt-1 border-t border-slate-800 pt-1">
-                    <span class="${parseBoolean(el.is_scene_continuation, true) ? 'text-cyan-400' : 'text-amber-400'}">${parseBoolean(el.is_scene_continuation, true) ? '↻ Same scene' : '→ New scene'}</span>
-                    ${el.visual_change_description ? `<div class="text-slate-600 mt-0.5 leading-relaxed">${escapeHtml(el.visual_change_description.slice(0, 120))}${el.visual_change_description.length > 120 ? '...' : ''}</div>` : ''}
-                </div>
-            </div>
-        `;
-
-        div.onclick = () => handleAction(el);
-        div.addEventListener('mouseenter', () => highlightElement(el.id));
-        div.addEventListener('mouseleave', clearHighlight);
-        actionsList.appendChild(div);
-    });
-
-    setupHitTesting(data);
-    hideLoading();
-}
-
-// ============================================================
-// Handle action click
-// ============================================================
-async function handleAction(element) {
-    document.getElementById('actions-list').innerHTML = '';
-    showLoading('Generating scene...');
-
-    try {
-        const res = await fetch(`${API_BASE}/generate-action-scene`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                imageUrl: currentImageUrl,
-                action: element.action,
-                description: element.description || '',
-                visualChangeDescription: element.visual_change_description || '',
-                isSceneContinuation: parseBoolean(element.is_scene_continuation, true),
-                plot: currentPlot,
-                plotHistory,
-                aestheticPrompt: selectedAesthetic?.prompt || '',
-                styleImageUrl: selectedAesthetic?.imageUrl || ''
-            })
-        });
-
-        if (!res.ok) {
-            const err = await res.json();
-            throw new Error(err.error || 'Generation failed');
-        }
-
-        const data = await res.json();
-        console.log('Action complete:', data.elements?.length, 'elements');
-
-        pushSceneHistory(data, element.action);
-        renderScene(data);
-
-    } catch (error) {
-        console.error(error);
-        alert('Failed: ' + error.message);
-        hideLoading();
-        // Restore actions if generation failed
-        if (sceneHistory[historyIndex]) {
-            renderScene(sceneHistory[historyIndex]);
-        }
-    }
-}
-
-// ============================================================
 // Canvas hit-testing
 // ============================================================
 let _hitListeners = null;
 
-async function setupHitTesting(data) {
+async function setupHitTesting(payload) {
     const image = document.getElementById('scene-image');
     const container = image.parentElement;
     const canvas = document.getElementById('highlight-canvas');
@@ -391,12 +385,11 @@ async function setupHitTesting(data) {
 
     const onMove = (e) => maskHover(e, container, canvas);
     const onLeave = clearHighlight;
-    const onClick = (e) => maskClick(e, container, data);
+    const onClick = (e) => maskClick(e, container, payload);
 
     container.addEventListener('mousemove', onMove);
     container.addEventListener('mouseleave', onLeave);
     container.addEventListener('click', onClick);
-
     _hitListeners = { move: onMove, leave: onLeave, click: onClick };
 
     const resizeCanvas = () => {
@@ -406,15 +399,14 @@ async function setupHitTesting(data) {
     window.addEventListener('resize', resizeCanvas);
     image.onload = resizeCanvas;
 
-    for (const el of (data.elements || [])) {
+    for (const el of (payload.elements || [])) {
         if (!el.maskUrl) continue;
         const maskCanvas = document.createElement('canvas');
         maskCanvas.width = SCENE_WIDTH;
         maskCanvas.height = SCENE_HEIGHT;
         const ctx = maskCanvas.getContext('2d', { willReadFrequently: true });
-
         const img = new Image();
-        img.crossOrigin = "anonymous";
+        img.crossOrigin = 'anonymous';
         try {
             await new Promise((resolve, reject) => {
                 img.onload = () => { ctx.drawImage(img, 0, 0, SCENE_WIDTH, SCENE_HEIGHT); maskCanvases[el.id] = { canvas: maskCanvas, ctx }; resolve(); };
@@ -425,23 +417,26 @@ async function setupHitTesting(data) {
     }
 }
 
-function maskHover(e, container, canvas) {
+function pickElementAt(e, container) {
     const rect = container.getBoundingClientRect();
     const scaleX = SCENE_WIDTH / rect.width;
     const scaleY = SCENE_HEIGHT / rect.height;
     const x = Math.floor((e.clientX - rect.left) * scaleX);
     const y = Math.floor((e.clientY - rect.top) * scaleY);
-
     let bestId = null, bestAlpha = 0;
     for (const [id, entry] of Object.entries(maskCanvases)) {
         const alpha = entry.ctx.getImageData(x, y, 1, 1).data[3];
         if (alpha > bestAlpha && alpha > 30) { bestAlpha = alpha; bestId = id; }
     }
+    return bestId;
+}
 
+function maskHover(e, container, canvas) {
+    const bestId = pickElementAt(e, container);
     const ctx = canvas.getContext('2d');
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     if (bestId && maskCanvases[bestId]) {
-        ctx.fillStyle = '#fde047';
+        ctx.fillStyle = '#ffffff';
         ctx.fillRect(0, 0, canvas.width, canvas.height);
         ctx.globalCompositeOperation = 'destination-in';
         ctx.drawImage(maskCanvases[bestId].canvas, 0, 0, canvas.width, canvas.height);
@@ -449,20 +444,10 @@ function maskHover(e, container, canvas) {
     }
 }
 
-function maskClick(e, container, data) {
-    const rect = container.getBoundingClientRect();
-    const scaleX = SCENE_WIDTH / rect.width;
-    const scaleY = SCENE_HEIGHT / rect.height;
-    const x = Math.floor((e.clientX - rect.left) * scaleX);
-    const y = Math.floor((e.clientY - rect.top) * scaleY);
-
-    let bestId = null, bestAlpha = 0;
-    for (const [id, entry] of Object.entries(maskCanvases)) {
-        const alpha = entry.ctx.getImageData(x, y, 1, 1).data[3];
-        if (alpha > bestAlpha && alpha > 30) { bestAlpha = alpha; bestId = id; }
-    }
+function maskClick(e, container, payload) {
+    const bestId = pickElementAt(e, container);
     if (bestId) {
-        const el = (data.elements || []).find(e => e.id === bestId);
+        const el = (payload.elements || []).find(x => x.id === bestId);
         if (el) handleAction(el);
     }
 }
@@ -472,12 +457,10 @@ function highlightElement(elementId) {
     const container = document.getElementById('scene-image').parentElement;
     const entry = maskCanvases[elementId];
     if (!entry || !container) return;
-
     const ctx = canvas.getContext('2d');
     canvas.width = container.getBoundingClientRect().width;
     canvas.height = container.getBoundingClientRect().height;
-
-    ctx.fillStyle = '#fde047';
+    ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.globalCompositeOperation = 'destination-in';
     ctx.drawImage(entry.canvas, 0, 0, canvas.width, canvas.height);
@@ -486,10 +469,7 @@ function highlightElement(elementId) {
 
 function clearHighlight() {
     const canvas = document.getElementById('highlight-canvas');
-    if (canvas) {
-        const ctx = canvas.getContext('2d');
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-    }
+    if (canvas) canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
 }
 
 // ============================================================
@@ -500,37 +480,30 @@ function renderHistoryDialog() {
     const timelineList = document.getElementById('history-dialog-list');
     if (!storyList || !timelineList) return;
 
-    const current = sceneHistory[historyIndex];
-
-    if (!current) {
-        storyList.innerHTML = '<div class="text-slate-600">No story yet.</div>';
-        timelineList.innerHTML = '';
-        return;
-    }
-
-    storyList.innerHTML = current.plotHistory.length > 0
-        ? current.plotHistory.map((entry, i) =>
-            `<div class="flex gap-2 ${i === current.plotHistory.length - 1 ? 'text-slate-200' : 'text-slate-400'}">
-                <span class="text-slate-600 text-xs mt-0.5 flex-shrink-0">${i + 1}.</span>
+    const story = currentPayload?.storySoFar || [];
+    storyList.innerHTML = story.length > 0
+        ? story.map((entry, i) =>
+            `<div class="flex gap-2 ${i === story.length - 1 ? 'text-ink-100' : 'text-ink-400'}">
+                <span class="text-ink-500 text-xs mt-1 flex-shrink-0">${i + 1}.</span>
                 <span class="leading-relaxed">${escapeHtml(entry)}</span>
-            </div>`
-          ).join('')
-        : '<div class="text-slate-600">No story yet.</div>';
+            </div>`).join('')
+        : '<div class="text-ink-500">No story yet.</div>';
 
-    timelineList.innerHTML = sceneHistory.map((snap, i) => {
-        const isCurrent = i === historyIndex;
+    const thumbs = nav.thumbnails || [];
+    timelineList.innerHTML = thumbs.map((snap, i) => {
+        const isCurrent = i === nav.index;
         return `<button type="button" onclick="jumpToHistory(${i})"
-            class="w-full text-left flex gap-3 p-3 rounded-xl border transition-colors
-                   ${isCurrent ? 'border-emerald-600 bg-emerald-950/30' : 'border-slate-800 hover:border-slate-600 hover:bg-slate-800/50'}">
-            <img src="${escapeHtml(snap.imageUrl)}" alt=""
-                 class="w-20 h-14 object-cover rounded-lg border border-slate-700 flex-shrink-0">
+            class="group w-full text-left flex gap-3 p-2.5 rounded-xl border transition-colors
+                   ${isCurrent ? 'border-ink-400 bg-ink-850' : 'border-ink-800 hover:border-ink-600 hover:bg-ink-850'}">
+            <img src="${escapeHtml(snap.imageUrl || '')}" alt=""
+                 class="w-20 h-14 object-cover rounded-lg border border-ink-700 flex-shrink-0 grayscale ${isCurrent ? 'grayscale-0' : 'group-hover:grayscale-0'} transition-all">
             <div class="flex-1 min-w-0">
                 <div class="flex items-center gap-2">
-                    <span class="text-slate-600 text-xs">${i + 1}.</span>
-                    <span class="font-medium text-slate-300 text-sm truncate">${escapeHtml(snap.label)}</span>
-                    ${isCurrent ? '<span class="text-xs text-emerald-400">you are here</span>' : ''}
+                    <span class="text-ink-500 text-xs">${i + 1}.</span>
+                    <span class="font-medium text-ink-200 text-sm truncate">${escapeHtml(snap.label || '')}</span>
+                    ${isCurrent ? '<span class="label text-ink-300">here</span>' : ''}
                 </div>
-                ${snap.narrative ? `<div class="text-xs text-slate-500 mt-1 italic line-clamp-2">${escapeHtml(snap.narrative)}</div>` : ''}
+                ${snap.narrative ? `<div class="text-xs text-ink-500 mt-1 font-serif italic line-clamp-2">${escapeHtml(snap.narrative)}</div>` : ''}
             </div>
         </button>`;
     }).join('');
@@ -538,7 +511,6 @@ function renderHistoryDialog() {
 
 function toggleHistoryDialog() {
     const dialog = document.getElementById('history-dialog');
-
     if (dialog.classList.contains('hidden')) {
         renderHistoryDialog();
         updateHistoryNav();
@@ -559,17 +531,17 @@ function resetAdventure() {
     document.getElementById('plot-input').value = '';
     document.getElementById('custom-style-preview').classList.add('hidden');
     document.getElementById('custom-style-input').value = '';
+    hideEnding();
 
+    sessionId = null;
+    currentPayload = null;
+    nav = { index: 0, total: 0, thumbnails: [] };
     currentImageUrl = null;
     currentElements = [];
-    plotHistory = [];
     selectedAesthetic = null;
     pendingCustomAesthetic = null;
     maskCanvases = {};
-    sceneHistory = [];
-    historyIndex = -1;
     updateHistoryNav();
-
     showStyleScreen();
 }
 
@@ -583,7 +555,7 @@ function escapeHtml(str) {
     return div.innerHTML;
 }
 
-document.addEventListener('keydown', function(e) {
+document.addEventListener('keydown', function (e) {
     if (e.key === '/' && document.activeElement?.tagName === 'BODY') {
         e.preventDefault();
         if (!document.getElementById('plot-screen').classList.contains('hidden')) {
