@@ -1,0 +1,598 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NEON VEIL • Cyberpunk Bar</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=Space+Grotesk:wght@500;600&amp;display=swap');
+        
+        :root {
+            --neon-pink: #ff00aa;
+            --neon-cyan: #00f3ff;
+        }
+        
+        body {
+            font-family: 'Inter', system_ui, sans-serif;
+        }
+        
+        .title-font {
+            font-family: 'Space Grotesk', 'Inter', system_ui, sans-serif;
+            font-weight: 600;
+            letter-spacing: -0.025em;
+        }
+
+        .game-container {
+            box-shadow: 0 0 40px rgba(0, 0, 0, 0.6);
+            border: 1px solid #334155;
+        }
+
+        .scene-image {
+            image-rendering: crisp-edges;
+            filter: contrast(1.05) saturate(1.1);
+        }
+
+        .hotspot {
+            transition: all 0.2s cubic-bezier(0.23, 1, 0.32, 1);
+            fill: rgba(255, 0, 170, 0.08);
+            stroke: #ff00aa;
+            stroke-width: 2;
+            stroke-opacity: 0.6;
+        }
+        
+        .hotspot:hover {
+            fill: rgba(255, 0, 170, 0.18);
+            stroke: #ff00aa;
+            stroke-opacity: 1;
+            stroke-width: 3;
+            filter: drop-shadow(0 0 8px #ff00aa);
+        }
+
+        .hotspot-cyan {
+            stroke: #00f3ff;
+            fill: rgba(0, 243, 255, 0.08);
+        }
+        
+        .hotspot-cyan:hover {
+            fill: rgba(0, 243, 255, 0.18);
+            stroke: #00f3ff;
+            filter: drop-shadow(0 0 8px #00f3ff);
+        }
+
+        .action-tooltip {
+            position: absolute;
+            background: #0f172a;
+            border: 1px solid #334155;
+            color: white;
+            padding: 12px 16px;
+            border-radius: 8px;
+            font-size: 14px;
+            max-width: 260px;
+            box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.3);
+            pointer-events: none;
+            z-index: 50;
+            opacity: 0;
+            transition: opacity 0.15s ease;
+            transform: translateY(8px);
+        }
+        
+        .action-tooltip.visible {
+            opacity: 1;
+            transform: translateY(0);
+        }
+
+        .neon-text {
+            text-shadow: 0 0 10px currentColor;
+        }
+
+        .cyberpunk-bg {
+            background: linear-gradient(#0f172a, #020617);
+        }
+
+        #back-button {
+            z-index: 30;
+            font-family: 'Space Grotesk', system_ui, sans-serif;
+        }
+    </style>
+</head>
+<body class="bg-slate-950 text-slate-200 cyberpunk-bg min-h-screen">
+    <div class="max-w-5xl mx-auto p-6">
+        <!-- Header -->
+        <div class="flex items-center justify-between mb-6">
+            <div>
+                <div class="flex items-center gap-x-3">
+                    <div class="w-9 h-9 bg-gradient-to-br from-pink-500 to-cyan-400 rounded flex items-center justify-center">
+                        <span class="text-slate-950 font-bold text-xl tracking-tighter">NV</span>
+                    </div>
+                    <div>
+                        <h1 class="title-font text-3xl font-semibold tracking-tight">NEON VEIL</h1>
+                        <p class="text-slate-400 text-sm -mt-1">Sector 7 • 2077</p>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="flex items-center gap-x-4 text-sm">
+                <div class="px-3 py-1.5 bg-slate-900 rounded border border-slate-800 flex items-center gap-x-2">
+                    <div class="w-2 h-2 bg-emerald-400 rounded-full animate-pulse"></div>
+                    <span class="text-emerald-400 font-medium">LIVE</span>
+                </div>
+                <div class="text-slate-400">CREDITS: <span class="font-mono text-white">12,480</span></div>
+            </div>
+        </div>
+
+        <div class="flex gap-6">
+            
+            <!-- Main Scene -->
+            <div class="flex-1">
+                <div class="relative game-container rounded-2xl overflow-hidden border border-slate-800 bg-black shadow-2xl">
+                    <!-- The Scene Image -->
+                    <img id="scene-image" 
+                         src="https://v3b.fal.media/files/b/0a9c7167/Tajpvt4RlP9b_wNA5kU1v_30eaf998d5c14d38aa27c5fb731ffe2f.jpg" 
+                         class="scene-image w-full max-w-[1024px] h-auto block cursor-crosshair"
+                         alt="Cyberpunk bar scene">
+
+                    <!-- Highlight canvas (yellow overlay using SAM masks) -->
+                    <canvas id="highlight-canvas" 
+                            class="absolute top-0 left-0 w-full h-full pointer-events-none"
+                            width="1024" height="768"
+                            style="mix-blend-mode: screen; opacity: 0.75;"></canvas>
+
+                    <!-- Hidden canvases for mask-based hit testing -->
+                    <div id="mask-canvases" style="display: none;"></div>
+                </div>
+                
+                <div class="mt-3 text-xs text-slate-500 flex justify-between px-1">
+                    <div>Click or hover regions to interact</div>
+                    <div class="font-mono">1024 × 768</div>
+                </div>
+            </div>
+
+            <!-- Side Panel -->
+            <div class="w-80 flex-shrink-0">
+                <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 h-full">
+                    <div class="mb-4">
+                        <div class="text-xs uppercase tracking-widest text-slate-400 mb-1">CURRENT LOCATION</div>
+                        <div class="text-xl font-semibold title-font">The Black Lotus</div>
+                        <div class="text-sm text-pink-400">Lower Neon District • Level 12</div>
+                    </div>
+
+                    <div class="border-t border-slate-800 pt-4">
+                        <div class="text-xs uppercase tracking-widest text-slate-400 mb-2">INTERACTIONS</div>
+                        
+                        <div id="interaction-list" class="space-y-2 text-sm">
+                            <!-- Populated by JS -->
+                        </div>
+                    </div>
+
+                    <div class="mt-6 pt-4 border-t border-slate-800">
+                        <div class="text-[10px] text-slate-500 mb-1.5">PROTOTYPE NOTE</div>
+                        <div class="text-xs text-slate-400 leading-relaxed">
+                            This is a live demo of the Diomedes engine. 
+                            Regions were auto-detected using SAM 3.
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Tailwind script
+        function initializeTailwind() {
+            const style = document.createElement('style');
+            style.innerHTML = `
+                .hotspot { cursor: pointer; }
+            `;
+            document.head.appendChild(style);
+        }
+
+        // Hotspot data with nice cyberpunk actions
+        // Regions with their SAM mask URLs for per-pixel hit testing
+        const regions = [
+            {
+                id: "door",
+                name: "Security Door",
+                action: "Use security scanner",
+                description: "Exit the bar through the reinforced security door. Requires clearance or a bribe.",
+                color: "#ff00aa",
+                maskUrl: "https://v3b.fal.media/files/b/0a9c7169/mP8nx9GPgUxo0KjBx7vMX.png"
+            },
+            {
+                id: "bartender",
+                name: "Cyborg Bartender",
+                action: "Talk to the bartender",
+                description: "The chrome-armed cyborg bartender. Can sell information, drinks, or jobs.",
+                color: "#00f3ff",
+                maskUrl: "https://v3b.fal.media/files/b/0a9c7169/EXHT9IAkw_-yPAlNHWhS8.png"
+            },
+            {
+                id: "patron1",
+                name: "Augmented Regular",
+                action: "Talk to the patron",
+                description: "A heavily augmented regular. Might have rumors about the latest corp hit.",
+                color: "#ff00aa",
+                maskUrl: "https://v3b.fal.media/files/b/0a9c71b8/HbpNn4pUff1_oXUV6tIOn.png"
+            },
+            {
+                id: "patron2",
+                name: "Shady Fixer",
+                action: "Buy information",
+                description: "This guy looks like he knows where the bodies are buried.",
+                color: "#ff00aa",
+                maskUrl: "https://v3b.fal.media/files/b/0a9c716a/I6pbkz6dKjS7CnkX0lz5o.png"
+            },
+            {
+                id: "bottles",
+                name: "Neon Bottles",
+                action: "Examine the bottles",
+                description: "Row of glowing synthetic liquors behind the bar.",
+                color: "#00f3ff",
+                maskUrl: "https://v3b.fal.media/files/b/0a9c716a/_I3aXTlJITejZUOIhmJlr.png"
+            }
+        ];
+
+        // Pre-generated next scenes (one level deep)
+        const nextScenes = {
+            "door": {
+                imageUrl: "https://v3b.fal.media/files/b/0a9c71cb/JfDp7IWMoCsKe83PSSDnF_2ca8f1c7f4f94b37bdf8dda32dd2fe39.jpg",
+                title: "Rain-Slick Alley",
+                description: "You step into the cold night. A contact is waiting."
+            },
+            "bartender": {
+                imageUrl: "https://v3b.fal.media/files/b/0a9c71cc/6BFZSiUZ0Kh-AakqN8IWP_9be8650a5f424df4afb1fd40cec3cc09.jpg",
+                title: "The Offer",
+                description: "The bartender slides you something important."
+            },
+            "patron1": {
+                imageUrl: "https://v3b.fal.media/files/b/0a9c71ce/nBJ7Ob0rTH5Z9-ee6POGt_ca8a673def95477fac7ca6dc2dcd605d.jpg",
+                title: "Holographic Intel",
+                description: "The regular shares what he knows."
+            }
+        };
+
+        let maskCanvases = {};
+        let activeRegion = null;
+
+        async function setupCanvasHitTesting() {
+            const image = document.getElementById('scene-image');
+            const container = image.parentElement;
+            const tooltip = createTooltip();
+            const listContainer = document.getElementById('interaction-list');
+
+            // Build side list
+            listContainer.innerHTML = regions.map(r => `
+                <div class="flex items-start gap-x-3 p-2 rounded-lg hover:bg-slate-800 transition-colors cursor-pointer" data-region="${r.id}">
+                    <div class="w-2 h-2 mt-1.5 rounded-full flex-shrink-0" style="background-color: ${r.color}"></div>
+                    <div class="min-w-0">
+                        <div class="font-medium text-sm">${r.name}</div>
+                        <div class="text-xs text-slate-400 line-clamp-2">${r.action}</div>
+                    </div>
+                </div>
+            `).join('');
+
+            listContainer.querySelectorAll('[data-region]').forEach(el => {
+                el.addEventListener('click', () => {
+                    const id = el.dataset.region;
+                    const region = regions.find(r => r.id === id);
+                    if (region) {
+                        highlightRegion(id);
+                        showActionInPanel(region);
+                    }
+                });
+            });
+
+            // Create hidden canvases for each mask
+            const hiddenContainer = document.getElementById('mask-canvases');
+            
+            for (const region of regions) {
+                const canvas = document.createElement('canvas');
+                canvas.width = 1024;
+                canvas.height = 768;
+                canvas.style.display = 'none';
+                hiddenContainer.appendChild(canvas);
+
+                const ctx = canvas.getContext('2d', { willReadFrequently: true });
+                
+                const img = new Image();
+                img.crossOrigin = "anonymous";
+                
+                await new Promise((resolve) => {
+                    img.onload = () => {
+                        ctx.drawImage(img, 0, 0, 1024, 768);
+                        maskCanvases[region.id] = { canvas, ctx };
+                        resolve();
+                    };
+                    img.onerror = () => {
+                        console.warn('Failed to load mask for', region.id);
+                        resolve();
+                    };
+                    img.src = region.maskUrl;
+                });
+            }
+
+            // Mouse move handler for per-pixel detection
+            container.addEventListener('mousemove', (e) => {
+                handleMaskHitTest(e, container, image, tooltip);
+            });
+
+            container.addEventListener('mouseleave', () => {
+                hideTooltip(tooltip);
+                activeRegion = null;
+                // Optional: uncomment next line if you want hover to also clear permanent highlights
+                // clearHighlight();
+            });
+
+            // Click handler
+            container.addEventListener('click', (e) => {
+                if (activeRegion) {
+                    showActionInPanel(activeRegion);
+                }
+            });
+
+            console.log('Canvas hit testing ready with', Object.keys(maskCanvases).length, 'masks');
+
+            // Initial clear of highlight canvas
+            clearHighlight();
+        }
+
+        function highlightRegion(regionId) {
+            const highlightCanvas = document.getElementById('highlight-canvas');
+            if (!highlightCanvas) return;
+
+            const hctx = highlightCanvas.getContext('2d');
+            hctx.clearRect(0, 0, 1024, 768);
+
+            const entry = maskCanvases[regionId];
+            if (!entry) return;
+
+            // Draw yellow highlight using the mask as alpha mask
+            hctx.fillStyle = '#ffeb3b'; // Bright yellow
+            hctx.fillRect(0, 0, 1024, 768);
+
+            hctx.globalCompositeOperation = 'destination-in';
+            hctx.drawImage(entry.canvas, 0, 0, 1024, 768);
+            hctx.globalCompositeOperation = 'source-over';
+        }
+
+        function clearHighlight() {
+            const highlightCanvas = document.getElementById('highlight-canvas');
+            if (highlightCanvas) {
+                const hctx = highlightCanvas.getContext('2d');
+                hctx.clearRect(0, 0, 1024, 768);
+            }
+        }
+
+        function handleMaskHitTest(e, container, image, tooltip) {
+            const rect = container.getBoundingClientRect();
+            const scaleX = 1024 / rect.width;
+            const scaleY = 768 / rect.height;
+
+            let x = (e.clientX - rect.left) * scaleX;
+            let y = (e.clientY - rect.top) * scaleY;
+
+            // Clamp
+            x = Math.max(0, Math.min(1023, Math.floor(x)));
+            y = Math.max(0, Math.min(767, Math.floor(y)));
+
+            let bestRegion = null;
+            let bestAlpha = 0;
+
+            // Check each mask
+            for (const region of regions) {
+                const entry = maskCanvases[region.id];
+                if (!entry) continue;
+
+                const data = entry.ctx.getImageData(x, y, 1, 1).data;
+                const alpha = data[3]; // Alpha channel
+
+                if (alpha > bestAlpha && alpha > 40) {  // threshold
+                    bestAlpha = alpha;
+                    bestRegion = region;
+                }
+            }
+
+            if (bestRegion && bestRegion !== activeRegion) {
+                activeRegion = bestRegion;
+                showTooltip(tooltip, bestRegion, e);
+            } else if (!bestRegion) {
+                activeRegion = null;
+                hideTooltip(tooltip);
+            } else if (bestRegion) {
+                // Still over same region, just update position
+                positionTooltip(tooltip, e);
+            }
+        }
+
+        function createTooltip() {
+            const tooltip = document.createElement('div');
+            tooltip.className = 'action-tooltip bg-slate-900 border border-slate-700 text-sm shadow-xl';
+            tooltip.style.pointerEvents = 'none';
+            document.body.appendChild(tooltip);
+            return tooltip;
+        }
+
+        function showTooltip(tooltip, region, event) {
+            tooltip.innerHTML = `
+                <div class="font-semibold mb-1" style="color: ${region.color}">${region.action}</div>
+                <div class="text-slate-300 text-xs leading-snug">${region.description}</div>
+            `;
+            tooltip.style.opacity = '1';
+            positionTooltip(tooltip, event);
+        }
+
+        function hideTooltip(tooltip) {
+            tooltip.style.opacity = '0';
+        }
+
+        function positionTooltip(tooltip, event) {
+            tooltip.style.left = `${event.clientX + 18}px`;
+            tooltip.style.top = `${event.clientY - 10}px`;
+        }
+
+        function setupHotspots() {
+            // Canvas-based per-pixel hit testing using SAM masks
+            setupCanvasHitTesting();
+        }
+
+        function showActionInPanel(region) {
+            const hasNextScene = nextScenes[region.id];
+
+            const panel = document.createElement('div');
+            panel.className = `fixed bottom-6 right-6 bg-slate-900 border border-slate-700 rounded-2xl p-5 max-w-sm shadow-2xl z-50`;
+            panel.innerHTML = `
+                <div class="flex justify-between items-start mb-3">
+                    <div>
+                        <div class="text-xs uppercase tracking-widest text-slate-400">${region.name}</div>
+                        <div class="text-lg font-semibold" style="color: ${region.color}">${region.action}</div>
+                    </div>
+                    <button class="text-slate-400 hover:text-white text-xl leading-none">×</button>
+                </div>
+                <div class="text-sm text-slate-300 leading-relaxed mb-4">
+                    ${region.description}
+                </div>
+                <div class="flex gap-2">
+                    <button onclick="this.closest('.fixed').remove()" 
+                            class="flex-1 py-2 text-sm rounded-lg bg-slate-800 hover:bg-slate-700 transition-colors">
+                        Cancel
+                    </button>
+                    ${hasNextScene ? 
+                        `<button onclick="goToNextScene('${region.id}', this)" 
+                                class="flex-1 py-2 text-sm rounded-lg font-medium transition-colors"
+                                style="background-color: ${region.color}20; color: ${region.color}; border: 1px solid ${region.color}40">
+                            Perform Action
+                        </button>` : 
+                        `<button onclick="executeAction('${region.id}', this)" 
+                                class="flex-1 py-2 text-sm rounded-lg font-medium transition-colors"
+                                style="background-color: ${region.color}20; color: ${region.color}; border: 1px solid ${region.color}40">
+                            Perform Action
+                        </button>`
+                    }
+                </div>
+            `;
+            
+            document.body.appendChild(panel);
+            panel.querySelector('button').onclick = () => panel.remove();
+        }
+
+        function goToNextScene(regionId, button) {
+            const scene = nextScenes[regionId];
+            if (!scene) return;
+
+            const image = document.getElementById('scene-image');
+            const container = image.parentElement;
+
+            // Switch to next scene
+            image.src = scene.imageUrl;
+
+            // Add back button if not already present
+            let backBtn = document.getElementById('back-button');
+            if (!backBtn) {
+                backBtn = document.createElement('button');
+                backBtn.id = 'back-button';
+                backBtn.className = 'absolute top-4 left-4 px-4 py-2 text-sm rounded-lg bg-black/70 border border-white/30 hover:bg-white/10 transition-colors';
+                backBtn.textContent = '← Back to the Black Lotus';
+                backBtn.onclick = () => {
+                    image.src = 'https://v3b.fal.media/files/b/0a9c7167/Tajpvt4RlP9b_wNA5kU1v_30eaf998d5c14d38aa27c5fb731ffe2f.jpg';
+                    backBtn.remove();
+                    clearHighlight();
+                };
+                container.appendChild(backBtn);
+            }
+
+            // Close the action panel
+            if (button) button.closest('.fixed')?.remove();
+
+            // Clear any active highlights
+            clearHighlight();
+
+            // Optional: show a small caption
+            showSceneCaption(scene);
+        }
+
+        function showSceneCaption(scene) {
+            const caption = document.createElement('div');
+            caption.className = 'absolute bottom-4 left-1/2 -translate-x-1/2 bg-black/70 px-4 py-2 rounded-lg text-sm border border-white/20';
+            caption.innerHTML = `<strong>${scene.title}</strong> — ${scene.description}`;
+            
+            const container = document.getElementById('scene-image').parentElement;
+            container.appendChild(caption);
+
+            setTimeout(() => {
+                caption.style.transition = 'opacity 0.4s ease';
+                caption.style.opacity = '0';
+                setTimeout(() => caption.remove(), 300);
+            }, 2800);
+        }
+
+        function executeAction(id, button) {
+            const originalText = button.innerHTML;
+            button.innerHTML = 'Executing...';
+            button.disabled = true;
+
+            setTimeout(() => {
+                button.innerHTML = 'Action Complete ✓';
+                button.style.backgroundColor = '#22c55e20';
+                button.style.color = '#22c55e';
+                button.style.borderColor = '#22c55e40';
+
+                setTimeout(() => {
+                    if (button.closest('.fixed')) {
+                        button.closest('.fixed').remove();
+                    }
+                    showToast(id);
+                }, 900);
+            }, 1350);
+        }
+
+        function showToast(id) {
+            const toast = document.createElement('div');
+            toast.className = `fixed bottom-6 left-1/2 -translate-x-1/2 bg-slate-900 border border-emerald-500/30 text-emerald-400 px-5 py-3 rounded-2xl text-sm flex items-center gap-x-3 shadow-xl z-50`;
+            
+            let message = "Interaction recorded.";
+            if (id === 'door') message = "Security door unlocked. +50 rep with local fixer.";
+            if (id === 'bartender') message = "You bought a shot of synthetic whiskey and some intel.";
+            if (id === 'patron') message = "The patron slipped you a data shard.";
+
+            toast.innerHTML = `<div>${message}</div>`;
+            document.body.appendChild(toast);
+            
+            setTimeout(() => {
+                toast.style.transition = 'all 0.3s ease';
+                toast.style.opacity = '0';
+                setTimeout(() => toast.remove(), 200);
+            }, 2800);
+        }
+
+        // Initialize everything
+        function init() {
+            initializeTailwind();
+            setupHotspots();
+            
+            // Keyboard hint
+            document.addEventListener('keydown', function(e) {
+                if (e.key === '?') {
+                    console.log('Canvas mask hit testing active');
+                }
+            });
+
+            // Welcome toast
+            setTimeout(() => {
+                const hint = document.createElement('div');
+                hint.className = 'fixed bottom-6 left-6 text-xs bg-slate-900 border border-slate-800 px-3 py-1.5 rounded-full text-slate-400 flex items-center gap-x-2';
+                hint.innerHTML = `Click regions in the sidebar → Perform Action to jump to a pre-generated next scene`;
+                document.body.appendChild(hint);
+                
+                setTimeout(() => {
+                    hint.style.transition = 'all .3s ease';
+                    hint.style.opacity = '0';
+                    setTimeout(() => hint.remove(), 200);
+                }, 5200);
+            }, 1800);
+        }
+
+        // Boot
+        window.onload = init;
+    </script>
+</body>
+</html>
