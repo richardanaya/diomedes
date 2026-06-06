@@ -6,6 +6,12 @@ const API_BASE = 'http://localhost:3000/api';
 const SCENE_WIDTH = 640;
 const SCENE_HEIGHT = 480;
 
+function parseBoolean(value, defaultValue = true) {
+    if (value === true || value === 'true') return true;
+    if (value === false || value === 'false') return false;
+    return defaultValue;
+}
+
 // State
 let currentImageUrl = null;
 let currentElements = [];     // { id, name, action, description, maskUrl }
@@ -14,7 +20,8 @@ let currentPlot = '';
 let selectedAesthetic = null; // { imageUrl, prompt, name? }
 let pendingCustomAesthetic = null;
 let maskCanvases = {};
-let videoCache = {};
+let sceneHistory = [];   // snapshots of each scene state
+let historyIndex = -1;   // current position in timeline
 
 // ============================================================
 // Loading
@@ -138,6 +145,79 @@ function confirmCustomAesthetic() {
 }
 
 // ============================================================
+// Scene history / timeline
+// ============================================================
+function createSnapshot(data, label) {
+    return {
+        label,
+        imageUrl: data.imageUrl,
+        elements: JSON.parse(JSON.stringify(data.elements || [])),
+        narrative: data.narrative || '',
+        plotHistory: [...(data.plotHistory || plotHistory)]
+    };
+}
+
+function initSceneHistory(data, label) {
+    sceneHistory = [createSnapshot(data, label)];
+    historyIndex = 0;
+    updateHistoryNav();
+}
+
+function pushSceneHistory(data, label) {
+    sceneHistory = sceneHistory.slice(0, historyIndex + 1);
+    sceneHistory.push(createSnapshot(data, label));
+    historyIndex = sceneHistory.length - 1;
+    updateHistoryNav();
+}
+
+function restoreSceneSnapshot(snapshot) {
+    plotHistory = [...snapshot.plotHistory];
+    renderScene(snapshot);
+}
+
+function navigateHistory(delta) {
+    const next = historyIndex + delta;
+    if (next < 0 || next >= sceneHistory.length) return;
+    historyIndex = next;
+    restoreSceneSnapshot(sceneHistory[historyIndex]);
+    updateHistoryNav();
+}
+
+function jumpToHistory(index) {
+    if (index < 0 || index >= sceneHistory.length) return;
+    historyIndex = index;
+    restoreSceneSnapshot(sceneHistory[historyIndex]);
+    updateHistoryNav();
+    const dialog = document.getElementById('history-dialog');
+    if (dialog && !dialog.classList.contains('hidden')) renderHistoryDialog();
+}
+
+function updateHistoryNav() {
+    const canBack = historyIndex > 0;
+    const canForward = historyIndex < sceneHistory.length - 1;
+    const positionText = sceneHistory.length > 0
+        ? `Step ${historyIndex + 1} of ${sceneHistory.length}`
+        : '';
+
+    ['history-back-btn', 'dialog-history-back'].forEach(id => {
+        const btn = document.getElementById(id);
+        if (btn) btn.disabled = !canBack;
+    });
+    ['history-forward-btn', 'dialog-history-forward'].forEach(id => {
+        const btn = document.getElementById(id);
+        if (btn) btn.disabled = !canForward;
+    });
+    ['history-position', 'dialog-history-position'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = positionText;
+    });
+
+    if (!document.getElementById('history-dialog')?.classList.contains('hidden')) {
+        renderHistoryDialog();
+    }
+}
+
+// ============================================================
 // Start Adventure
 // ============================================================
 async function startAdventure() {
@@ -184,6 +264,7 @@ async function startAdventure() {
         document.getElementById('scene-screen').classList.remove('hidden');
         document.getElementById('header-bar').classList.remove('hidden');
 
+        initSceneHistory(data, 'Opening scene');
         renderScene(data);
 
     } catch (error) {
@@ -198,6 +279,10 @@ async function startAdventure() {
 // Render scene
 // ============================================================
 function renderScene(data) {
+    currentImageUrl = data.imageUrl;
+    currentElements = data.elements || [];
+    if (data.plotHistory) plotHistory = [...data.plotHistory];
+
     const image = document.getElementById('scene-image');
     image.src = data.imageUrl;
     image.style.visibility = 'visible';
@@ -225,7 +310,10 @@ function renderScene(data) {
                 <div class="font-medium text-sm">${escapeHtml(el.name)}</div>
                 <div class="text-xs text-slate-400">${escapeHtml(el.action)}</div>
                 ${el.description ? `<div class="text-xs text-slate-500 mt-0.5 italic">${escapeHtml(el.description)}</div>` : ''}
-                ${el.video_direction ? `<div class="text-xs text-slate-600 mt-1 leading-relaxed border-t border-slate-800 pt-1">🎬 ${escapeHtml(el.video_direction.slice(0, 120))}${el.video_direction.length > 120 ? '...' : ''}</div>` : ''}
+                <div class="text-xs mt-1 border-t border-slate-800 pt-1">
+                    <span class="${parseBoolean(el.is_scene_continuation, true) ? 'text-cyan-400' : 'text-amber-400'}">${parseBoolean(el.is_scene_continuation, true) ? '↻ Same scene' : '→ New scene'}</span>
+                    ${el.visual_change_description ? `<div class="text-slate-600 mt-0.5 leading-relaxed">${escapeHtml(el.visual_change_description.slice(0, 120))}${el.visual_change_description.length > 120 ? '...' : ''}</div>` : ''}
+                </div>
             </div>
         `;
 
@@ -246,24 +334,16 @@ async function handleAction(element) {
     document.getElementById('actions-list').innerHTML = '';
     showLoading('Generating scene...');
 
-    let cached = videoCache[element.id];
-
-    if (cached) {
-        console.log('Using cached result:', element.id);
-        hideLoading();
-        await playVideoThenShow(cached.videoUrl, cached.sceneData);
-        return;
-    }
-
     try {
-        const res = await fetch(`${API_BASE}/generate-action-video`, {
+        const res = await fetch(`${API_BASE}/generate-action-scene`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 imageUrl: currentImageUrl,
                 action: element.action,
                 description: element.description || '',
-                videoDirection: element.video_direction || '',
+                visualChangeDescription: element.visual_change_description || '',
+                isSceneContinuation: parseBoolean(element.is_scene_continuation, true),
                 plot: currentPlot,
                 plotHistory,
                 aestheticPrompt: selectedAesthetic?.prompt || '',
@@ -277,95 +357,20 @@ async function handleAction(element) {
         }
 
         const data = await res.json();
-        console.log('Action cycle complete:', data.elements?.length, 'elements');
+        console.log('Action complete:', data.elements?.length, 'elements');
 
-        videoCache[element.id] = {
-            videoUrl: data.videoUrl,
-            sceneData: data
-        };
-
-        hideLoading();
-        await playVideoThenShow(data.videoUrl, data);
+        pushSceneHistory(data, element.action);
+        renderScene(data);
 
     } catch (error) {
         console.error(error);
         alert('Failed: ' + error.message);
         hideLoading();
+        // Restore actions if generation failed
+        if (sceneHistory[historyIndex]) {
+            renderScene(sceneHistory[historyIndex]);
+        }
     }
-}
-
-// ============================================================
-// Play video → then show the new scene
-// ============================================================
-async function playVideoThenShow(videoUrl, sceneData) {
-    const video = document.getElementById('scene-video');
-    const image = document.getElementById('scene-image');
-
-    return new Promise((resolve) => {
-        video.src = videoUrl;
-        video.classList.remove('hidden');
-        video.style.display = 'block';
-        video.style.pointerEvents = 'none';
-        image.style.visibility = 'hidden';
-
-        const showNewScene = () => {
-            currentImageUrl = sceneData.imageUrl;
-            currentElements = sceneData.elements;
-            plotHistory = sceneData.plotHistory || plotHistory;
-
-            image.onload = () => {
-                video.classList.add('hidden');
-                video.style.display = 'none';
-                image.style.visibility = 'visible';
-                image.onload = null;
-            };
-            image.onerror = () => {
-                video.classList.add('hidden');
-                video.style.display = 'none';
-                image.style.visibility = 'visible';
-                image.onerror = null;
-            };
-
-            renderScene(sceneData);
-            resolve();
-        };
-
-        video.onended = () => {
-            video.onended = null;
-            video.onerror = null;
-            video.pause();
-            video.classList.add('hidden');
-            video.style.display = 'none';
-            video.style.pointerEvents = 'none';
-            video.src = '';
-            showNewScene();
-        };
-
-        video.onerror = () => {
-            video.onended = null;
-            video.onerror = null;
-            console.warn('Video playback error, showing scene directly');
-            video.classList.add('hidden');
-            video.style.display = 'none';
-            video.style.pointerEvents = 'none';
-            video.src = '';
-            showNewScene();
-        };
-
-        video.play().catch(() => {
-            video.onended = null;
-            video.onerror = null;
-            setTimeout(() => {
-                if (video.src && !video.ended) {
-                    video.classList.add('hidden');
-                    video.style.display = 'none';
-                    video.style.pointerEvents = 'none';
-                    video.src = '';
-                }
-                showNewScene();
-            }, 5000);
-        });
-    });
 }
 
 // ============================================================
@@ -490,18 +495,53 @@ function clearHighlight() {
 // ============================================================
 // History Dialog
 // ============================================================
+function renderHistoryDialog() {
+    const storyList = document.getElementById('history-story-list');
+    const timelineList = document.getElementById('history-dialog-list');
+    if (!storyList || !timelineList) return;
+
+    const current = sceneHistory[historyIndex];
+
+    if (!current) {
+        storyList.innerHTML = '<div class="text-slate-600">No story yet.</div>';
+        timelineList.innerHTML = '';
+        return;
+    }
+
+    storyList.innerHTML = current.plotHistory.length > 0
+        ? current.plotHistory.map((entry, i) =>
+            `<div class="flex gap-2 ${i === current.plotHistory.length - 1 ? 'text-slate-200' : 'text-slate-400'}">
+                <span class="text-slate-600 text-xs mt-0.5 flex-shrink-0">${i + 1}.</span>
+                <span class="leading-relaxed">${escapeHtml(entry)}</span>
+            </div>`
+          ).join('')
+        : '<div class="text-slate-600">No story yet.</div>';
+
+    timelineList.innerHTML = sceneHistory.map((snap, i) => {
+        const isCurrent = i === historyIndex;
+        return `<button type="button" onclick="jumpToHistory(${i})"
+            class="w-full text-left flex gap-3 p-3 rounded-xl border transition-colors
+                   ${isCurrent ? 'border-emerald-600 bg-emerald-950/30' : 'border-slate-800 hover:border-slate-600 hover:bg-slate-800/50'}">
+            <img src="${escapeHtml(snap.imageUrl)}" alt=""
+                 class="w-20 h-14 object-cover rounded-lg border border-slate-700 flex-shrink-0">
+            <div class="flex-1 min-w-0">
+                <div class="flex items-center gap-2">
+                    <span class="text-slate-600 text-xs">${i + 1}.</span>
+                    <span class="font-medium text-slate-300 text-sm truncate">${escapeHtml(snap.label)}</span>
+                    ${isCurrent ? '<span class="text-xs text-emerald-400">you are here</span>' : ''}
+                </div>
+                ${snap.narrative ? `<div class="text-xs text-slate-500 mt-1 italic line-clamp-2">${escapeHtml(snap.narrative)}</div>` : ''}
+            </div>
+        </button>`;
+    }).join('');
+}
+
 function toggleHistoryDialog() {
     const dialog = document.getElementById('history-dialog');
-    const list = document.getElementById('history-dialog-list');
 
     if (dialog.classList.contains('hidden')) {
-        list.innerHTML = plotHistory.length > 0
-            ? plotHistory.map((h, i) =>
-                `<div class="border-b border-slate-800 pb-2">
-                    <span class="text-slate-600 text-xs">${i + 1}.</span> ${escapeHtml(h)}
-                </div>`
-              ).join('')
-            : '<div class="text-slate-600">No story yet.</div>';
+        renderHistoryDialog();
+        updateHistoryNav();
         dialog.classList.remove('hidden');
     } else {
         dialog.classList.add('hidden');
@@ -526,7 +566,9 @@ function resetAdventure() {
     selectedAesthetic = null;
     pendingCustomAesthetic = null;
     maskCanvases = {};
-    videoCache = {};
+    sceneHistory = [];
+    historyIndex = -1;
+    updateHistoryNav();
 
     showStyleScreen();
 }
@@ -548,6 +590,9 @@ document.addEventListener('keydown', function(e) {
             document.getElementById('plot-input')?.focus();
         }
     }
+    if (document.getElementById('scene-screen')?.classList.contains('hidden')) return;
+    if (e.altKey && e.key === 'ArrowLeft') { e.preventDefault(); navigateHistory(-1); }
+    if (e.altKey && e.key === 'ArrowRight') { e.preventDefault(); navigateHistory(1); }
 });
 
 loadPresetStyles();

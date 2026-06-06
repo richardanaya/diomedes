@@ -2,12 +2,12 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const { fal } = require('@fal-ai/client');
-const { analyzeFrameWithGrok, writeVideoDirection } = require('./lib/xai');
+const { analyzeFrameWithGrok } = require('./lib/xai');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Increase body limit for base64 image uploads (last frame extraction)
+// Increase body limit for large JSON payloads
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.static('public'));
@@ -17,7 +17,6 @@ fal.config({ credentials: process.env.FAL_KEY });
 // Model constants
 const IMAGE_MODEL = "openai/gpt-image-2";
 const IMAGE_EDIT_MODEL = "openai/gpt-image-2/edit";
-const VIDEO_MODEL = "xai/grok-imagine-video/v1.5/image-to-video";
 const IMAGE_SIZE = { width: 640, height: 480 };
 const STYLE_REFERENCE_SIZE = { width: 1920, height: 1080 };
 
@@ -40,25 +39,16 @@ function buildStyleReferencePrompt(styleText) {
   return `make a style reference that shows a ${styleText}, a color palette, and various examples of scenes, character, and item styles. No text or UX elements. the point of this style reference document is to give enough stylistic examples for an AI to consistently replicate it.`;
 }
 
-async function generateSceneImage({ sceneDescription, aestheticPrompt, styleImageUrl, continuityImageUrl }) {
-  if (!styleImageUrl) throw new Error('styleImageUrl is required for scene generation');
+function parseBoolean(value, defaultValue = true) {
+  if (value === true || value === 'true') return true;
+  if (value === false || value === 'false') return false;
+  return defaultValue;
+}
 
-  const continuityNote = continuityImageUrl
-    ? ' The second attached image is the scene continuity reference — preserve its composition and what changed after the player action.'
-    : '';
-
-  const imagePrompt = `Use the attached image as a aesthetic style reference only (not a character or scene reference): Create a point-and-click adventure game scene: ${sceneDescription}. Visual aesthetic: ${aestheticPrompt}. Match its art style, color palette, and rendering exactly.${continuityNote} Establishing shot, no UI elements.`;
-
-  const imageUrls = continuityImageUrl
-    ? [styleImageUrl, continuityImageUrl]
-    : [styleImageUrl];
-
-  console.log(`  GPT Image edit: style ref + ${continuityImageUrl ? 'continuity frame' : 'text only'}`);
-  console.log(`  Style image: ${styleImageUrl}`);
-
+async function callGptImageEdit(prompt, imageUrls) {
   const imageResult = await fal.subscribe(IMAGE_EDIT_MODEL, {
     input: {
-      prompt: imagePrompt,
+      prompt,
       image_urls: imageUrls,
       image_size: IMAGE_SIZE,
       quality: 'low',
@@ -68,10 +58,54 @@ async function generateSceneImage({ sceneDescription, aestheticPrompt, styleImag
   return imageResult.data.images[0].url;
 }
 
+async function generateSceneImage({
+  sceneDescription,
+  aestheticPrompt,
+  styleImageUrl,
+  previousSceneImageUrl,
+  visualChangeDescription,
+  isSceneContinuation
+}) {
+  if (!styleImageUrl) throw new Error('styleImageUrl is required for scene generation');
+
+  const styleRefNote = 'The FIRST attached image is the aesthetic style reference only — match its art style, color palette, and rendering. Do not copy specific characters or scenes from it.';
+  const sceneRefNote = 'The SECOND attached image is the previous game scene — use it as the character and appearance reference.';
+  let imagePrompt;
+  let imageUrls;
+
+  const isContinuation = parseBoolean(isSceneContinuation, true);
+
+  if (!previousSceneImageUrl) {
+    imagePrompt = `Use the attached image as a aesthetic style reference only (not a character or scene reference): Create a point-and-click adventure game scene: ${sceneDescription}. Visual aesthetic: ${aestheticPrompt}. Match its art style, color palette, and rendering exactly. Establishing shot, no UI elements.`;
+    imageUrls = [styleImageUrl];
+  } else if (isContinuation) {
+    imagePrompt = `${styleRefNote} ${sceneRefNote} The player action: ${sceneDescription}. This is a CONTINUATION of the same scene in the second image. Visual changes to apply: ${visualChangeDescription}. Keep the same location, characters, and general composition — only depict the visual changes described. Visual aesthetic: ${aestheticPrompt}. No UI elements.`;
+    imageUrls = [styleImageUrl, previousSceneImageUrl];
+  } else {
+    imagePrompt = `${styleRefNote} ${sceneRefNote} PRESERVE the player character's appearance, clothing, face, body type, and any recurring characters exactly as they appear in the second image. The player action: ${sceneDescription}. This is a NEW location — change the environment, background, and setting completely. Do NOT reuse the previous room, layout, or camera angle. New scene to show: ${visualChangeDescription}. Visual aesthetic: ${aestheticPrompt}. Fresh establishing shot of the new place with the same characters, no UI elements.`;
+    imageUrls = [styleImageUrl, previousSceneImageUrl];
+  }
+
+  console.log(`  GPT Image edit: style ref + ${previousSceneImageUrl ? (isContinuation ? 'scene continuation' : 'new scene') : 'opening scene'}`);
+  console.log(`  Style image: ${styleImageUrl}`);
+  if (previousSceneImageUrl) console.log(`  Previous scene: ${previousSceneImageUrl}`);
+
+  try {
+    return await callGptImageEdit(imagePrompt, imageUrls);
+  } catch (err) {
+    if (previousSceneImageUrl && !isContinuation) {
+      console.warn('  New scene generation failed, retrying with stronger character continuity:', err.message);
+      const retryPrompt = `${styleRefNote} ${sceneRefNote} CRITICAL: the player character must look identical to how they appear in the second image — same face, hair, clothing, and proportions. The player action: ${sceneDescription}. NEW location: ${visualChangeDescription}. Change only the background and environment. Visual aesthetic: ${aestheticPrompt}. No UI elements.`;
+      return await callGptImageEdit(retryPrompt, [styleImageUrl, previousSceneImageUrl]);
+    }
+    throw err;
+  }
+}
+
 // ============================================================
 // SAM validation — finds masks for referring expressions
 // ============================================================
-async function validateElementsWithSAM(imageUrl, elements) {
+async function validateElementsWithSAM(imageUrl, elements, idPrefix = Date.now()) {
   if (!elements || elements.length === 0) return [];
   console.log(`  SAM validating ${elements.length} elements...`);
 
@@ -87,11 +121,12 @@ async function validateElementsWithSAM(imageUrl, elements) {
       });
       if (result.data.masks?.length > 0) {
         validated.push({
-          id: `el-${validated.length}`,
+          id: `el-${idPrefix}-${validated.length}`,
           name: el.name,
           action: el.action,
           description: el.description,
-          video_direction: el.video_direction || '',
+          is_scene_continuation: parseBoolean(el.is_scene_continuation, true),
+          visual_change_description: el.visual_change_description || '',
           referring_expression: el.referring_expression || el.referringExpression,
           maskUrl: result.data.masks[0].url
         });
@@ -178,7 +213,8 @@ app.post('/api/start-adventure', async (req, res) => {
     console.log('-------------------------------------\n');
 
     // Step 3: SAM validates each element against the image
-    const validatedElements = await validateElementsWithSAM(imageUrl, analysis.elements || []);
+    const elementIdPrefix = Date.now();
+    const validatedElements = await validateElementsWithSAM(imageUrl, analysis.elements || [], elementIdPrefix);
 
     // Fallback if too few elements passed SAM
     if (validatedElements.length < 2) {
@@ -195,11 +231,12 @@ app.post('/api/start-adventure', async (req, res) => {
           });
           if (r.data.masks?.length > 0) {
             validatedElements.push({
-              id: `fb-${validatedElements.length}`,
+              id: `fb-${elementIdPrefix}-${validatedElements.length}`,
               name: prompt.charAt(0).toUpperCase() + prompt.slice(1),
               action: "Examine",
               description: "Something catches your attention.",
-              video_direction: "",
+              is_scene_continuation: true,
+              visual_change_description: "The player examines the object more closely, with subtle lighting emphasis on the area of interest.",
               referring_expression: prompt,
               maskUrl: r.data.masks[0].url
             });
@@ -226,12 +263,22 @@ app.post('/api/start-adventure', async (req, res) => {
 });
 
 // ============================================================
-// Adventure: Full action cycle — video + frame + analysis
+// Adventure: Action cycle — generate next scene image + analysis
 // ============================================================
-app.post('/api/generate-action-video', async (req, res) => {
+app.post('/api/generate-action-scene', async (req, res) => {
   try {
-    const { imageUrl, action, description, videoDirection, plot, plotHistory, aestheticPrompt, styleImageUrl } = req.body;
-    const artStyle = aestheticPrompt;
+    const {
+      imageUrl,
+      action,
+      description,
+      visualChangeDescription,
+      isSceneContinuation,
+      plot,
+      plotHistory,
+      aestheticPrompt,
+      styleImageUrl
+    } = req.body;
+
     if (!imageUrl || !action) {
       return res.status(400).json({ error: 'imageUrl and action required' });
     }
@@ -239,107 +286,48 @@ app.post('/api/generate-action-video', async (req, res) => {
       return res.status(400).json({ error: 'styleImageUrl is required' });
     }
 
-    console.log(`\n=== Full Action Cycle: "${action}" ===`);
+    const continuation = parseBoolean(isSceneContinuation, true);
+    const visualChange = visualChangeDescription?.trim()
+      || (description ? `${action}. ${description}` : action);
 
-    // ---- Step 0: Video prompt (from element or generated) ----
-    console.log("  [0/5] Preparing video prompt...");
-    let videoPrompt;
-    if (videoDirection && videoDirection.trim().length > 20) {
-      videoPrompt = videoDirection.trim();
-      console.log("  Using element video_direction: " + videoPrompt.slice(0, 150) + "...");
-    } else {
-      console.log("  No video_direction, generating with Grok...");
-      videoPrompt = await writeVideoDirection(action, description, plot, plotHistory, artStyle);
-      if (videoPrompt) {
-        console.log("  Generated: " + videoPrompt.slice(0, 150) + "...");
-      }
-    }
-    if (!videoPrompt) {
-      videoPrompt = description
-        ? action + ". " + description + ". Cinematic camera movement, maintaining visual consistency."
-        : action + ". Cinematic camera movement, maintaining visual consistency.";
-    }
+    console.log(`\n=== Action Scene: "${action}" (${continuation ? 'continuation' : 'new scene'}) ===`);
+    console.log(`  isSceneContinuation raw: ${JSON.stringify(isSceneContinuation)} → ${continuation}`);
 
-    // ---- Step 1: Generate video ----
-    console.log('  [1/5] Generating video...');
-    const result = await fal.subscribe(VIDEO_MODEL, {
-      input: { image_url: imageUrl, prompt: videoPrompt, duration: 4, resolution: "480p" }
-    });
-    const video = result.data.video;
-    console.log(`  Video: ${video.duration}s, ${video.width}x${video.height}`);
-
-    // ---- Step 2: Extract last frame with ffmpeg (used as continuity reference) ----
-    console.log('  [2/5] Extracting last frame...');
-    const { execSync } = require('child_process');
-    const os = require('os');
-    const fs = require('fs');
-
-    let frameHostedUrl = null;
-
-    try {
-      const seekTime = Math.max(0, (video.duration || 4) - 0.5);
-      const frameBuffer = execSync(
-        `ffmpeg -y -ss ${seekTime} -i "${video.url}" -vframes 1 -f image2 -c:v mjpeg -q:v 3 -`,
-        { timeout: 15000, maxBuffer: 10 * 1024 * 1024 }
-      );
-
-      if (frameBuffer.length < 500) {
-        throw new Error(`Frame too small: ${frameBuffer.length} bytes`);
-      }
-
-      console.log(`  Frame extracted: ${frameBuffer.length} bytes`);
-
-      // Upload to fal storage for use as continuity reference in scene generation
-      frameHostedUrl = await fal.storage.upload(frameBuffer, {
-        contentType: 'image/jpeg',
-        fileName: `frame-${Date.now()}.jpg`
-      });
-    } catch (ffErr) {
-      console.warn('  Frame extraction failed, using original image:', ffErr.message);
-    }
-
-    // ---- Step 3: Regenerate scene still via GPT using style ref + continuity frame ----
-    console.log('  [3/5] Generating styled scene image...');
     const sceneDescription = description
-      ? `After the player chose to "${action}": ${description}`
-      : `After the player chose to "${action}" in this adventure.`;
+      ? `${action}: ${description}`
+      : action;
 
-    let sceneImageUrl = frameHostedUrl || imageUrl;
-    try {
-      sceneImageUrl = await generateSceneImage({
-        sceneDescription,
-        aestheticPrompt: aestheticPrompt || artStyle,
-        styleImageUrl,
-        continuityImageUrl: frameHostedUrl || imageUrl
-      });
-      console.log(`  Styled scene ready: ${sceneImageUrl}`);
-    } catch (imgErr) {
-      console.warn('  Styled scene generation failed, using continuity frame:', imgErr.message);
-    }
+    // Step 1: Generate next scene image
+    console.log('  [1/3] Generating scene image...');
+    const sceneImageUrl = await generateSceneImage({
+      sceneDescription,
+      aestheticPrompt,
+      styleImageUrl,
+      previousSceneImageUrl: imageUrl,
+      visualChangeDescription: visualChange,
+      isSceneContinuation: continuation
+    });
+    console.log(`  Scene ready: ${sceneImageUrl}`);
 
-    // ---- Step 4: Grok analyzes the frame (vision) ----
-    console.log('  [4/5] Grok analyzing frame...');
+    // Step 2: Grok analyzes the new image
+    console.log('  [2/3] Grok analyzing scene...');
     const updatedHistory = [...(plotHistory || []), `The player chose to: ${action}.`];
+    let analysis = await analyzeFrameWithGrok(sceneImageUrl, plot, updatedHistory, aestheticPrompt);
 
-    let analysis = await analyzeFrameWithGrok(sceneImageUrl, plot, updatedHistory, artStyle);
-
-    // If empty, retry with continuity frame
     if (!analysis.elements || analysis.elements.length === 0) {
-      console.warn('  Frame analysis empty, retrying with continuity frame...');
-      analysis = await analyzeFrameWithGrok(frameHostedUrl || imageUrl, plot, updatedHistory, artStyle);
+      console.warn('  Analysis empty, retrying with previous scene...');
+      analysis = await analyzeFrameWithGrok(imageUrl, plot, updatedHistory, aestheticPrompt);
     }
-
-    const samImageUrl = sceneImageUrl;
 
     console.log('\n---------- FRAME ANALYSIS ----------');
     console.log(JSON.stringify(analysis, null, 2));
     console.log('-------------------------------------\n');
 
-    // ---- Step 5: SAM validates ----
-    console.log('  [5/5] SAM scanning...');
-    const validatedElements = await validateElementsWithSAM(samImageUrl, analysis.elements || []);
+    // Step 3: SAM validates
+    console.log('  [3/3] SAM scanning...');
+    const elementIdPrefix = Date.now();
+    const validatedElements = await validateElementsWithSAM(sceneImageUrl, analysis.elements || [], elementIdPrefix);
 
-    // Fallback if too few
     if (validatedElements.length < 2) {
       const fallbackPrompts = [
         "a person or figure", "a prominent object", "an architectural feature",
@@ -349,24 +337,28 @@ app.post('/api/generate-action-video', async (req, res) => {
         if (validatedElements.length >= 4) break;
         try {
           const r = await fal.subscribe("fal-ai/sam-3/image", {
-            input: { image_url: samImageUrl, prompt: p, return_multiple_masks: false }
+            input: { image_url: sceneImageUrl, prompt: p, return_multiple_masks: false }
           });
           if (r.data.masks?.length > 0) {
             validatedElements.push({
-              id: `fb-${validatedElements.length}`, name: p.charAt(0).toUpperCase() + p.slice(1),
-              action: "Examine", description: "Something catches your attention.",
-              video_direction: "", referring_expression: p, maskUrl: r.data.masks[0].url
+              id: `fb-${elementIdPrefix}-${validatedElements.length}`,
+              name: p.charAt(0).toUpperCase() + p.slice(1),
+              action: "Examine",
+              description: "Something catches your attention.",
+              is_scene_continuation: true,
+              visual_change_description: "The player examines the object more closely, with subtle lighting emphasis on the area of interest.",
+              referring_expression: p,
+              maskUrl: r.data.masks[0].url
             });
           }
         } catch (e) { /* skip */ }
       }
     }
 
-    console.log(`  Done: ${validatedElements.length} elements, returning to client\n`);
+    console.log(`  Done: ${validatedElements.length} elements\n`);
 
     res.json({
-      videoUrl: video.url,
-      imageUrl: samImageUrl,
+      imageUrl: sceneImageUrl,
       narrative: analysis.sceneNarrative || '',
       elements: validatedElements,
       plotHistory: updatedHistory

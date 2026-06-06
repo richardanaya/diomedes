@@ -18,15 +18,30 @@
 <div class="max-w-6xl mx-auto p-6">
 
     <!-- Header -->
-    <div id="header-bar" class="flex items-center justify-end mb-6 gap-2 hidden">
-        <button onclick="toggleHistoryDialog()"
-                class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 rounded-lg text-sm text-slate-400">
-            Story So Far
-        </button>
-        <button onclick="resetAdventure()"
-                class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 rounded-lg text-sm">
-            New Adventure
-        </button>
+    <div id="header-bar" class="flex items-center justify-between mb-6 gap-2 hidden">
+        <div class="flex items-center gap-1">
+            <button id="history-back-btn" onclick="navigateHistory(-1)"
+                    class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 rounded-lg text-sm text-slate-300 disabled:opacity-30 disabled:cursor-not-allowed"
+                    disabled title="Go back to try a different action">
+                ← Back
+            </button>
+            <button id="history-forward-btn" onclick="navigateHistory(1)"
+                    class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 rounded-lg text-sm text-slate-300 disabled:opacity-30 disabled:cursor-not-allowed"
+                    disabled title="Go forward in timeline">
+                Forward →
+            </button>
+            <span id="history-position" class="text-xs text-slate-500 ml-2 tabular-nums"></span>
+        </div>
+        <div class="flex items-center gap-2">
+            <button onclick="toggleHistoryDialog()"
+                    class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 rounded-lg text-sm text-slate-400">
+                Story So Far
+            </button>
+            <button onclick="resetAdventure()"
+                    class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 rounded-lg text-sm">
+                New Adventure
+            </button>
+        </div>
     </div>
 
     <!-- Aesthetic Style Selection -->
@@ -65,7 +80,7 @@
     <div id="plot-screen" class="hidden">
         <div class="max-w-2xl mx-auto py-8">
             <h2 class="text-2xl font-semibold mb-2 text-center">Begin Your Adventure</h2>
-            <p class="text-slate-400 mb-6 text-center">Describe the plot. The AI will generate the opening scene, find what's interactable, and let you play through video sequences.</p>
+            <p class="text-slate-400 mb-6 text-center">Describe the plot. The AI will generate the opening scene, find what's interactable, and generate new images as you play.</p>
 
             <div id="selected-aesthetic-preview" class="mb-6 flex items-center gap-4 p-4 bg-slate-900 border border-slate-700 rounded-xl">
                 <img id="selected-aesthetic-thumb" class="w-24 h-16 object-cover rounded-lg border border-slate-700" alt="Selected aesthetic">
@@ -97,11 +112,10 @@
     <div id="scene-screen" class="hidden">
         <div class="flex gap-6">
 
-            <!-- Image / Video Area -->
+            <!-- Scene Image -->
             <div class="flex-1">
                 <div class="scene-container bg-black rounded-2xl overflow-hidden border border-slate-800 shadow-2xl">
                     <img id="scene-image" class="w-full block" alt="Scene">
-                    <video id="scene-video" class="absolute top-0 left-0 w-full h-full hidden" playsinline muted crossorigin="anonymous"></video>
                     <canvas id="highlight-canvas" class="absolute top-0 left-0 w-full h-full"></canvas>
                 </div>
 
@@ -130,12 +144,31 @@
     <!-- History Dialog -->
     <div id="history-dialog" class="hidden fixed inset-0 z-40 flex items-center justify-center" onclick="toggleHistoryDialog()">
         <div class="absolute inset-0 bg-black/60"></div>
-        <div class="relative bg-slate-900 border border-slate-700 rounded-2xl p-6 max-w-lg w-full mx-4 max-h-[70vh] overflow-y-auto" onclick="event.stopPropagation()">
-            <div class="flex items-center justify-between mb-4">
+        <div class="relative bg-slate-900 border border-slate-700 rounded-2xl p-6 max-w-lg w-full mx-4 max-h-[80vh] flex flex-col" onclick="event.stopPropagation()">
+            <div class="flex items-center justify-between mb-4 flex-shrink-0">
                 <div class="text-sm uppercase tracking-widest text-slate-400">Story So Far</div>
                 <button onclick="toggleHistoryDialog()" class="text-slate-500 hover:text-slate-300 text-lg">&times;</button>
             </div>
-            <div id="history-dialog-list" class="space-y-3 text-sm text-slate-400"></div>
+
+            <div class="overflow-y-auto flex-1 min-h-0">
+                <div id="history-story-list" class="space-y-2 text-sm text-slate-300 mb-6"></div>
+
+                <div class="text-xs uppercase tracking-widest text-slate-500 mb-2">Rewind &amp; try another path</div>
+                <p class="text-xs text-slate-500 mb-3">Click a scene to jump back and choose a different action.</p>
+                <div id="history-dialog-list" class="space-y-2 text-sm text-slate-400"></div>
+            </div>
+
+            <div class="flex items-center justify-between pt-4 mt-4 border-t border-slate-800 flex-shrink-0">
+                <div class="flex items-center gap-1">
+                    <button id="dialog-history-back" onclick="navigateHistory(-1)"
+                            class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 rounded-lg text-sm text-slate-300 disabled:opacity-30 disabled:cursor-not-allowed"
+                            disabled>← Back</button>
+                    <button id="dialog-history-forward" onclick="navigateHistory(1)"
+                            class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 rounded-lg text-sm text-slate-300 disabled:opacity-30 disabled:cursor-not-allowed"
+                            disabled>Forward →</button>
+                </div>
+                <span id="dialog-history-position" class="text-xs text-slate-500 tabular-nums"></span>
+            </div>
         </div>
     </div>
 
