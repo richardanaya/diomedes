@@ -27,16 +27,42 @@ let currentPlot = '';
 let selectedAesthetic = null;  // { imageUrl, prompt, name? }
 let pendingCustomAesthetic = null;
 let maskCanvases = {};
+let sceneModels = [];          // [{ id, name, description }]
+let selectedSceneModel = null; // chosen per-scene render model id
 
 // ============================================================
-// Loading
+// Loading + favicon state
 // ============================================================
+const FAVICON_IDLE = '/favicon.svg';
+const FAVICON_GENERATING = '/favicon-generating.svg';
+let loadingDepth = 0;
+
+function setFavicon(generating) {
+    const state = generating ? 'generating' : 'idle';
+    const href = generating ? FAVICON_GENERATING : FAVICON_IDLE;
+    let link = document.getElementById('favicon');
+    if (!link) {
+        link = document.createElement('link');
+        link.id = 'favicon';
+        link.rel = 'icon';
+        link.type = 'image/svg+xml';
+        document.head.appendChild(link);
+    }
+    if (link.dataset.state === state) return;
+    link.dataset.state = state;
+    link.href = href;
+}
+
 function showLoading(text) {
+    loadingDepth += 1;
+    setFavicon(true);
     document.getElementById('loading-text').textContent = text;
     document.getElementById('loading-overlay').classList.remove('hidden');
     document.getElementById('loading-overlay').classList.add('flex');
 }
 function hideLoading() {
+    loadingDepth = Math.max(0, loadingDepth - 1);
+    if (loadingDepth === 0) setFavicon(false);
     document.getElementById('loading-overlay').classList.remove('flex');
     document.getElementById('loading-overlay').classList.add('hidden');
 }
@@ -60,6 +86,47 @@ function showPlotScreen() {
     document.getElementById('selected-aesthetic-thumb').src = selectedAesthetic.imageUrl;
     document.getElementById('selected-aesthetic-label').textContent =
         selectedAesthetic.name || selectedAesthetic.prompt;
+
+    loadSceneModels();
+}
+
+// ============================================================
+// Scene generation model selection
+// ============================================================
+async function loadSceneModels() {
+    const container = document.getElementById('scene-model-options');
+    if (sceneModels.length) { renderSceneModels(); return; }
+    try {
+        const res = await fetch(`${API_BASE}/scene-models`);
+        const data = await res.json();
+        sceneModels = data.models || [];
+        if (!selectedSceneModel) selectedSceneModel = data.default || sceneModels[0]?.id || null;
+        renderSceneModels();
+    } catch (error) {
+        console.error('Failed to load scene models:', error);
+    }
+}
+
+function renderSceneModels() {
+    const container = document.getElementById('scene-model-options');
+    if (!container) return;
+    container.innerHTML = '';
+    sceneModels.forEach(m => {
+        const active = m.id === selectedSceneModel;
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'text-left rounded-xl border p-3.5 transition-colors ' +
+            (active ? 'border-ink-400 bg-ink-850' : 'border-ink-800 bg-ink-900 hover:border-ink-600');
+        btn.innerHTML = `
+            <div class="flex items-center gap-2">
+                <span class="w-1.5 h-1.5 rounded-full ${active ? 'bg-ink-100' : 'bg-ink-600'}"></span>
+                <span class="font-medium text-sm text-ink-100">${escapeHtml(m.name)}</span>
+            </div>
+            <div class="text-xs text-ink-400 mt-1.5 leading-relaxed">${escapeHtml(m.description || '')}</div>
+        `;
+        btn.onclick = () => { selectedSceneModel = m.id; renderSceneModels(); };
+        container.appendChild(btn);
+    });
 }
 
 function goBackToStyleSelection() {
@@ -153,7 +220,8 @@ async function startAdventure() {
             body: JSON.stringify({
                 plot,
                 aestheticPrompt: selectedAesthetic.prompt,
-                styleImageUrl: selectedAesthetic.imageUrl
+                styleImageUrl: selectedAesthetic.imageUrl,
+                sceneModel: selectedSceneModel
             })
         });
         if (!res.ok) throw new Error((await res.json()).error || 'Failed to start adventure');
@@ -227,6 +295,7 @@ function renderScene(payload) {
     (payload.elements || []).forEach(el => {
         const isPrimary = el.id === payload.primaryElementId;
         const sameScene = parseBoolean(el.is_scene_continuation, true);
+        const isInspectAction = parseBoolean(el.is_inspect_action, false);
         const div = document.createElement('div');
         div.className = 'action-item group flex items-start gap-x-3 p-3 rounded-xl cursor-pointer transition-colors border ' +
             (isPrimary ? 'border-ink-600 bg-ink-850' : 'border-transparent hover:border-ink-700 hover:bg-ink-850');
@@ -237,14 +306,17 @@ function renderScene(payload) {
                 <div class="font-medium text-sm text-ink-100">${escapeHtml(el.name)} ${isPrimary ? '<span class="label text-ink-400 align-middle">suggested</span>' : ''}</div>
                 <div class="text-xs text-ink-300 mt-0.5">${escapeHtml(el.action)}</div>
                 ${el.description ? `<div class="text-xs text-ink-500 mt-0.5 font-serif italic">${escapeHtml(el.description)}</div>` : ''}
-                <div class="mt-1.5 pt-1.5 border-t hairline">
-                    <span class="label ${sameScene ? 'text-ink-500' : 'text-ink-200'}">${sameScene ? '↻ Same scene' : '→ New scene'}</span>
+                <div class="mt-1.5 pt-1.5 border-t hairline flex items-center justify-between gap-2">
+                    <span class="label ${isInspectAction ? 'text-ink-200' : sameScene ? 'text-ink-500' : 'text-ink-200'}">${isInspectAction ? '⊕ Close-up' : sameScene ? '↻ Same scene' : '→ New scene'}</span>
+                    <button type="button" class="inspect-btn label text-ink-400 hover:text-ink-100 border border-ink-700 hover:border-ink-500 rounded-md px-2 py-0.5 transition-colors" title="Take a closer look — doesn't change anything">⊕ Inspect</button>
                 </div>
             </div>
         `;
         div.onclick = () => handleAction(el);
         div.addEventListener('mouseenter', () => highlightElement(el.id));
         div.addEventListener('mouseleave', clearHighlight);
+        const inspectBtn = div.querySelector('.inspect-btn');
+        if (inspectBtn) inspectBtn.addEventListener('click', (e) => { e.stopPropagation(); handleInspect(el); });
         actionsList.appendChild(div);
     });
 
@@ -312,6 +384,54 @@ async function handleAction(element) {
         if (currentPayload) renderScene(currentPayload); // restore actions
         hideLoading();
     }
+}
+
+// ============================================================
+// Closeup inspection (transient — returns you to the same scene)
+// ============================================================
+async function handleInspect(element) {
+    showLoading('Looking closer…');
+    try {
+        const res = await fetch(`${API_BASE}/inspect`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sessionId, elementId: element.id })
+        });
+        if (!res.ok) throw new Error((await res.json()).error || 'Inspection failed');
+        const data = await res.json();
+        showCloseup(data);
+        // Surface any discovered clue in "Story so far" right away.
+        if (data.clue && currentPayload) {
+            currentPayload.storySoFar = [...(currentPayload.storySoFar || []), data.observation];
+        }
+    } catch (error) {
+        console.error(error);
+        alert('Failed: ' + error.message);
+    } finally {
+        hideLoading();
+    }
+}
+
+function showCloseup(data) {
+    document.getElementById('closeup-name').textContent = data.name || '';
+    document.getElementById('closeup-image').src = data.imageUrl;
+    document.getElementById('closeup-observation').textContent = data.observation || '';
+    const clueWrap = document.getElementById('closeup-clue');
+    if (data.clue) {
+        document.getElementById('closeup-clue-text').textContent = data.clue;
+        clueWrap.classList.remove('hidden');
+    } else {
+        clueWrap.classList.add('hidden');
+    }
+    const ov = document.getElementById('closeup-overlay');
+    ov.classList.remove('hidden');
+    ov.classList.add('flex');
+}
+
+function closeCloseup() {
+    const ov = document.getElementById('closeup-overlay');
+    ov.classList.add('hidden');
+    ov.classList.remove('flex');
 }
 
 // ============================================================
@@ -532,6 +652,7 @@ function resetAdventure() {
     document.getElementById('custom-style-preview').classList.add('hidden');
     document.getElementById('custom-style-input').value = '';
     hideEnding();
+    closeCloseup();
 
     sessionId = null;
     currentPayload = null;
@@ -561,6 +682,12 @@ document.addEventListener('keydown', function (e) {
         if (!document.getElementById('plot-screen').classList.contains('hidden')) {
             document.getElementById('plot-input')?.focus();
         }
+    }
+    if (e.key === 'Escape') {
+        const closeup = document.getElementById('closeup-overlay');
+        if (closeup && !closeup.classList.contains('hidden')) { closeCloseup(); return; }
+        const dialog = document.getElementById('history-dialog');
+        if (dialog && !dialog.classList.contains('hidden')) { toggleHistoryDialog(); return; }
     }
     if (document.getElementById('scene-screen')?.classList.contains('hidden')) return;
     if (e.altKey && e.key === 'ArrowLeft') { e.preventDefault(); navigateHistory(-1); }

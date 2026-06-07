@@ -9,7 +9,6 @@ const ws = require('./lib/world-state');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const ENABLE_PREFETCH = (process.env.ENABLE_PREFETCH ?? 'true') === 'true';
 
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
@@ -22,6 +21,10 @@ fal.config({ credentials: process.env.FAL_KEY });
 // ============================================================
 app.get('/api/aesthetic-presets', (req, res) => {
   res.json({ presets: sceneEngine.PRESET_AESTHETICS });
+});
+
+app.get('/api/scene-models', (req, res) => {
+  res.json({ models: sceneEngine.SCENE_MODEL_OPTIONS, default: sceneEngine.DEFAULT_SCENE_MODEL });
 });
 
 app.post('/api/generate-aesthetic', async (req, res) => {
@@ -79,41 +82,49 @@ function resolveLocation(state, locationChange) {
 // ============================================================
 // Core: render + ground a scene for a given (already-mutated) state
 // ============================================================
-async function renderAndGround(state, { node, isNewLocation, isOpening, renderBrief, beatNarrative, presentCharacters = [] }) {
-  // Character reference images (best-effort, capped per turn).
-  const npcRefUrls = [];
-  let npcGenBudget = sceneEngine.ENABLE_NPC_REFS ? 1 : 0;
-  for (const c of presentCharacters) {
-    const char = state.characters[c.id] || Object.values(state.characters).find(x => x.name === c.name);
-    if (!char) continue;
-    if (!char.referenceImageUrl && char.recurring && npcGenBudget > 0) {
-      npcGenBudget -= 1;
-      char.referenceImageUrl = await sceneEngine.generateCharacterReference({
-        description: char.description,
-        aestheticPrompt: state.aesthetic.prompt,
-        styleImageUrl: state.aesthetic.styleImageUrl,
-      });
+async function renderAndGround(state, {
+  node,
+  isNewLocation,
+  isOpening,
+  renderBrief,
+  beatNarrative,
+  presentCharacters = [],
+  inspectElement = null,
+  previousImageUrl = null,
+}) {
+  let imageUrl;
+
+  // Inspect actions commit a close-up of the subject, not a wide shot adjustment.
+  if (inspectElement && previousImageUrl) {
+    console.log(`  Rendering inspect close-up: "${inspectElement.name}"`);
+    imageUrl = await sceneEngine.renderCloseup({
+      sceneImageUrl: previousImageUrl,
+      styleImageUrl: state.aesthetic.styleImageUrl,
+      referringExpression: inspectElement.referring_expression,
+      name: inspectElement.name,
+      aestheticPrompt: state.aesthetic.prompt,
+      detailBrief: renderBrief,
+      model: state.sceneModel,
+    });
+  } else {
+    // Character reference images (best-effort, capped per turn).
+    const npcRefUrls = [];
+    let npcGenBudget = sceneEngine.ENABLE_NPC_REFS ? 1 : 0;
+    for (const c of presentCharacters) {
+      const char = state.characters[c.id] || Object.values(state.characters).find(x => x.name === c.name);
+      if (!char) continue;
+      if (!char.referenceImageUrl && char.recurring && npcGenBudget > 0) {
+        npcGenBudget -= 1;
+        char.referenceImageUrl = await sceneEngine.generateCharacterReference({
+          description: char.description,
+          aestheticPrompt: state.aesthetic.prompt,
+          styleImageUrl: state.aesthetic.styleImageUrl,
+        });
+      }
+      if (char.referenceImageUrl) npcRefUrls.push(char.referenceImageUrl);
     }
-    if (char.referenceImageUrl) npcRefUrls.push(char.referenceImageUrl);
-  }
 
-  // Render the Director's brief.
-  let imageUrl = await sceneEngine.renderScene({
-    renderBrief,
-    aestheticPrompt: state.aesthetic.prompt,
-    styleImageUrl: state.aesthetic.styleImageUrl,
-    playerRefUrl: state.player.referenceImageUrl,
-    locationAnchorUrl: isNewLocation ? null : node?.canonicalImageUrl || null,
-    npcRefUrls,
-    isOpening: !!isOpening,
-    isNewLocation,
-    seed: node?.seed,
-  });
-
-  // Optional fidelity check (regenerate once if the image is clearly off-brief).
-  if (!(await sceneEngine.fidelityCheck(imageUrl, renderBrief))) {
-    console.warn('  Fidelity check failed — regenerating once.');
-    imageUrl = await sceneEngine.renderScene({
+    const renderOpts = {
       renderBrief,
       aestheticPrompt: state.aesthetic.prompt,
       styleImageUrl: state.aesthetic.styleImageUrl,
@@ -123,10 +134,17 @@ async function renderAndGround(state, { node, isNewLocation, isOpening, renderBr
       isOpening: !!isOpening,
       isNewLocation,
       seed: node?.seed,
-    });
-  }
+      model: state.sceneModel,
+    };
+    imageUrl = await sceneEngine.renderScene(renderOpts);
 
-  ws.setLocationImage(state, node.id, imageUrl);
+    if (!(await sceneEngine.fidelityCheck(imageUrl, renderBrief))) {
+      console.warn('  Fidelity check failed — regenerating once.');
+      imageUrl = await sceneEngine.renderScene(renderOpts);
+    }
+
+    ws.setLocationImage(state, node.id, imageUrl);
+  }
 
   // Ground: find clickable regions, informed by world state.
   const persistentElements = (node.persistentElements || []).filter(e => !e.consumed);
@@ -141,7 +159,7 @@ async function renderAndGround(state, { node, isNewLocation, isOpening, renderBr
   const elements = await sceneEngine.groundElements({ imageUrl, elements: grounded.elements });
   ws.syncLocationElements(state, node.id, elements);
 
-  // Resolve the recommended next action id for prefetch / UX.
+  // Resolve the recommended next action id for UX.
   let primaryElementId = elements[0]?.id || null;
   const primName = grounded.elements[grounded.primaryIndex]?.name;
   if (primName) {
@@ -191,11 +209,12 @@ function respond(session, payload) {
 // ============================================================
 // Compute the next scene for a chosen element (mutates `state`)
 // ============================================================
-async function computeNextScene(state, element) {
+async function computeNextScene(state, element, { previousImageUrl } = {}) {
   state.turn += 1;
 
   const summary = ws.summarizeForDirector(state);
   const beat = await directBeat({ summary, element });
+  const isInspect = sceneEngine.isInspectAction(element);
 
   // Apply consequences with guardrails.
   const rejected = ws.applyStateChanges(state, beat.stateChanges);
@@ -220,31 +239,11 @@ async function computeNextScene(state, element) {
     renderBrief: beat.renderBrief,
     beatNarrative: beat.narrative,
     presentCharacters: beat.charactersPresent,
+    inspectElement: isInspect ? element : null,
+    previousImageUrl: isInspect ? previousImageUrl : null,
   });
 
   return buildPayload(state, { imageUrl, elements, primaryElementId, narrative: beat.narrative });
-}
-
-// ============================================================
-// Speculative prefetch of the most likely next scene
-// ============================================================
-function kickPrefetch(session, payload) {
-  if (!ENABLE_PREFETCH || payload.gameOver) return;
-  const element = (payload.elements || []).find(e => e.id === payload.primaryElementId);
-  if (!element) return;
-  const version = session.sceneVersion;
-
-  (async () => {
-    try {
-      const cloned = ws.clone(session.state);
-      const nextPayload = await computeNextScene(cloned, element);
-      if (session.sceneVersion !== version) return; // stale; player moved on
-      session.prefetch.set(element.id, { version, payload: nextPayload, stateSnapshot: cloned });
-      console.log(`  [prefetch] ready for "${element.action}"`);
-    } catch (e) {
-      // prefetch is best-effort
-    }
-  })();
 }
 
 // ============================================================
@@ -261,8 +260,10 @@ app.post('/api/start-adventure', async (req, res) => {
     console.log('NEW ADVENTURE:', plot.slice(0, 100));
     console.log('========================================');
 
-    const session = ws.createSession({ plot, aesthetic: { prompt: aestheticPrompt, styleImageUrl } });
+    const sceneModel = sceneEngine.normalizeSceneModel(req.body.sceneModel);
+    const session = ws.createSession({ plot, aesthetic: { prompt: aestheticPrompt, styleImageUrl }, sceneModel });
     const state = session.state;
+    console.log('SCENE MODEL:', sceneModel);
 
     // 1. Director establishes the world.
     console.log('→ Director establishing world...');
@@ -306,7 +307,6 @@ app.post('/api/start-adventure', async (req, res) => {
     ws.commitScene(session, payload, 'Opening scene');
 
     console.log(`Adventure ready: ${elements.length} elements\n`);
-    kickPrefetch(session, payload);
     res.json(respond(session, payload));
   } catch (error) {
     console.error('Error starting adventure:', error);
@@ -328,24 +328,69 @@ app.post('/api/action', async (req, res) => {
     const element = (current?.elements || []).find(e => e.id === elementId);
     if (!element) return res.status(400).json({ error: 'Unknown element for current scene.' });
 
-    // Prefetch hit?
-    const cached = session.prefetch.get(elementId);
-    if (cached && cached.version === session.sceneVersion) {
-      console.log(`\n=== Action (prefetched): "${element.action}" ===`);
-      session.state = ws.clone(cached.stateSnapshot);
-      ws.commitScene(session, cached.payload, element.action);
-      kickPrefetch(session, cached.payload);
-      return res.json(respond(session, cached.payload));
-    }
-
     console.log(`\n=== Action: "${element.action}" ===`);
-    const payload = await computeNextScene(session.state, element);
+    const payload = await computeNextScene(session.state, element, {
+      previousImageUrl: current?.imageUrl,
+    });
     ws.commitScene(session, payload, element.action);
-    kickPrefetch(session, payload);
     res.json(respond(session, payload));
   } catch (error) {
     console.error('Error in action:', error);
     res.status(500).json({ error: 'Failed to process action' });
+  }
+});
+
+// ============================================================
+// Endpoint: closeup inspection (transient — no world change, returns you back)
+// ============================================================
+app.post('/api/inspect', async (req, res) => {
+  try {
+    const { sessionId, elementId } = req.body;
+    const session = ws.getSession(sessionId);
+    if (!session) return res.status(404).json({ error: 'Session not found.' });
+
+    const current = session.history[session.historyIndex]?.payload;
+    const element = (current?.elements || []).find(e => e.id === elementId);
+    if (!element) return res.status(400).json({ error: 'Unknown element for current scene.' });
+
+    const state = session.state;
+    console.log(`\n=== Inspect (closeup): "${element.name}" ===`);
+
+    // Render a transient close-up of the element from the current scene.
+    const closeupUrl = await sceneEngine.renderCloseup({
+      sceneImageUrl: current.imageUrl,
+      styleImageUrl: state.aesthetic.styleImageUrl,
+      referringExpression: element.referring_expression,
+      name: element.name,
+      aestheticPrompt: state.aesthetic.prompt,
+      model: state.sceneModel,
+    });
+
+    // Observe meaningful detail / a clue.
+    const { observation, clue } = await sceneEngine.inspectCloseup({
+      imageUrl: closeupUrl,
+      element,
+      context: ws.summarizeForDirector(state),
+    });
+
+    // A clue is meaningful: persist it so the Director uses it later. The scene
+    // itself is NOT committed — the player returns to where they were.
+    if (clue) {
+      ws.addBibleFacts(state, [`While inspecting ${element.name}, the player noticed: ${clue}`]);
+      ws.addChronicle(state, { action: `Inspect ${element.name}`, outcome: observation, newFacts: [clue] });
+      ws.touch(session);
+    }
+
+    res.json({
+      closeup: true,
+      imageUrl: closeupUrl,
+      name: element.name,
+      observation,
+      clue: clue || '',
+    });
+  } catch (error) {
+    console.error('Error inspecting:', error);
+    res.status(500).json({ error: 'Failed to inspect element' });
   }
 });
 
@@ -359,7 +404,6 @@ app.post('/api/restore', (req, res) => {
     if (!session) return res.status(404).json({ error: 'Session not found.' });
     const payload = ws.restoreTo(session, index);
     if (!payload) return res.status(400).json({ error: 'Invalid history index.' });
-    kickPrefetch(session, payload);
     res.json(respond(session, payload));
   } catch (error) {
     console.error('Error restoring:', error);

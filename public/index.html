@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Diomedes — AI Adventure</title>
+    <link id="favicon" rel="icon" type="image/svg+xml" href="/favicon.svg">
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -153,6 +154,11 @@
                 <button onclick="goBackToStyleSelection()" class="text-sm text-ink-400 hover:text-ink-100 shrink-0">Change</button>
             </div>
 
+            <div class="mb-6">
+                <div class="label text-ink-500 mb-2">Scene generation model</div>
+                <div id="scene-model-options" class="grid grid-cols-1 sm:grid-cols-2 gap-3"></div>
+            </div>
+
             <label class="label text-ink-500 mb-2 block">Plot</label>
             <textarea id="plot-input"
                       class="w-full h-40 p-4 bg-ink-900 border border-ink-700 rounded-xl text-lg leading-relaxed resize-y placeholder:text-ink-500 focus:outline-none focus:border-ink-400 transition-colors font-serif"
@@ -207,6 +213,26 @@
             </aside>
         </div>
     </section>
+
+    <!-- Closeup inspection overlay (transient) -->
+    <div id="closeup-overlay" class="hidden fixed inset-0 z-40 items-center justify-center" onclick="closeCloseup()">
+        <div class="absolute inset-0 overlay"></div>
+        <div class="relative bg-ink-900 border border-ink-700 rounded-2xl p-5 max-w-2xl w-full mx-4 fade-in" onclick="event.stopPropagation()">
+            <div class="flex items-center justify-between mb-3">
+                <div class="label text-ink-400">Closer look</div>
+                <div id="closeup-name" class="font-serif text-lg text-ink-100 truncate"></div>
+            </div>
+            <div class="bg-black rounded-xl overflow-hidden border border-ink-800">
+                <img id="closeup-image" class="w-full block" alt="Closeup">
+            </div>
+            <p id="closeup-observation" class="mt-4 font-serif text-[15px] leading-relaxed text-ink-200"></p>
+            <div id="closeup-clue" class="hidden mt-3 flex items-start gap-2 text-sm text-ink-100 bg-ink-850 border border-ink-700 rounded-xl p-3">
+                <span class="label text-ink-400 mt-0.5">Clue</span>
+                <span id="closeup-clue-text" class="flex-1"></span>
+            </div>
+            <button onclick="closeCloseup()" class="btn-ghost mt-5 w-full py-3 rounded-xl font-medium">← Back to scene</button>
+        </div>
+    </div>
 
     <!-- Ending overlay -->
     <div id="ending-overlay" class="hidden fixed inset-0 z-50 items-center justify-center">

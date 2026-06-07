@@ -51,13 +51,32 @@ live in an inventory, an immutable story bible prevents contradictions, and the
 arc drives the story toward a real win/lose ending. Timeline rewind/branching is
 server-authoritative.
 
+**Actions are consequential.** Listed actions always do something meaningful —
+advance the plot, take/use an item, learn something, or make a decision. For
+pure visual curiosity, every element also has an **⊕ Inspect** button: a
+transient close-up that zooms into the element's detail and may surface a clue
+(persisted to the story bible), then returns you to the exact scene you were in
+without changing location, inventory, or the arc.
+
+### Scene generation model
+
+Before starting, you choose the model used to render **scenes** — the opening
+scene, every action scene, and closeups:
+
+- **GPT Image 2** (`openai/gpt-image-2/edit`, default)
+- **FLUX.2 [pro]** (`fal-ai/flux-2-pro/edit`)
+
+This choice applies only to per-scene renders. The one-time, reused images — the
+style reference and the protagonist character sheet — always use gpt-image-2 so
+they stay stable regardless of the chosen scene model.
+
 See `SUGGESTIONS.md` for the design rationale.
 
 ## Architecture
 
 | File | Role |
 | --- | --- |
-| `server.js` | Thin HTTP orchestrator: `/api/start-adventure`, `/api/action`, `/api/restore` |
+| `server.js` | Thin HTTP orchestrator: `/api/start-adventure`, `/api/action`, `/api/inspect`, `/api/restore` |
 | `lib/world-state.js` | Persistent world state + in-memory session store + history/branching |
 | `lib/director.js` | Narrative planner (plans each beat before rendering) |
 | `lib/scene-engine.js` | Image rendering, parallel SAM grounding, fallbacks, fidelity check |
@@ -75,5 +94,5 @@ See `SUGGESTIONS.md` for the design rationale.
 
 ## Configuration
 
-All optional env vars are documented in `.env.example` (models, prefetch, NPC
+All optional env vars are documented in `.env.example` (models, NPC
 reference images, fidelity check, SAM concurrency).
